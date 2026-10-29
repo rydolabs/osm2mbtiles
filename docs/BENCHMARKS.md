@@ -1,83 +1,57 @@
-# 벤치마크 결과와 공정 비교 기준
+# Performance benchmarks: osm2mbtiles vs Planetiler vs Tilemaker
 
-아래 값은 실제 벤치마크 증거가 있는 **서울 데이터의 제한된 조건**에서 측정했습니다. 국내 전체 규모의 성능 보장이 아닙니다.
+[Main README](../README.md) · [Korean historical measurements](BENCHMARKS.ko.md)
 
-## 다음 공식 비교: 세 엔진 동일 서울 권역·동일 설정
+## Recommended internationally reproducible dataset: Berlin
 
-**목표:** `osm2mbtiles`, `Planetiler`, `Tilemaker`를 동일한 실제 서울 OSM PBF 스냅샷, 동일 BBOX, 동일 줌 범위에서 재실행해 **최초 전체 생성 시간과 타일 생성 처리량**을 비교합니다. 아래 작업량은 **계획값**이고 아직 실측 성능 결과가 아닙니다.
+Use the official [Geofabrik Berlin extract](https://download.geofabrik.de/europe/germany/berlin.html) as input to all three engines. Freeze and checksum **one local copy** of the extract before running any comparison; `-latest` changes over time.
 
-| 규모 | BBOX (west,south,east,north) | 줌 | 사각형 XYZ 격자 | 용도 |
-|---|---|---|---:|---|
-| 1타일 | 서울시청 `14/13970/6344` | z14 | 1 | 정확성·레이어 스모크, 성능 순위에는 사용하지 않음 |
-| 작은 영역 | `126.95,37.51,127.05,37.60` | z12–16 | 561 | 초기 공통 실행·프로필 호환성 확인 |
-| **권장 메인** | **`126.75,37.40,127.20,37.72`** | **z12–16** | **8,418** | 서울 전역을 포괄하는 실제 성능 비교 |
-| 고부하 확장 | `126.75,37.40,127.20,37.72` | z12–17 | 32,838 | 다중 줌·저장 속도 스케일링 |
+| Tier | Input | bbox (W,S,E,N) | Zoom | Candidate XYZ cells | Purpose |
+|---|---|---|---|---:|---|
+| Smoke | Geofabrik Monaco | `7.41,43.72,7.44,43.75` | z12–16 | 87 | Feature and configuration smoke; too small for speed claims |
+| Berlin centre | Geofabrik Berlin | `13.35,52.49,13.45,52.54` | z12–16 | 432 | Fast setup and geometry parity |
+| **Berlin main** | Geofabrik Berlin | **`13.20,52.45,13.60,52.60`** | **z12–16** | **4,573** | **Primary three-engine benchmark** |
+| Berlin stress | Geofabrik Berlin | `13.088,52.338,13.761,52.676` | z12–16 | 16,943 | Optional scaling; includes cells beyond the city extract |
+| Seoul historical | independent Seoul non-military PBF | `126.75,37.40,127.20,37.72` | z12–16 | 8,418 | Historical regression; not the primary public benchmark |
 
-각 숫자는 이 저장소의 `src/osm2mbtiles/tiles.py::tile_count`의 **BBOX 사각형 XYZ 커버리지 계산** 기준입니다. 실제 비어 있지 않은 MBTiles 행 수가 아니며, 메인 BBOX는 **서울시 행정구역만 클리핑한 영역이 아니라 주변 경기도 등을 포함**합니다. `--dry-run`으로 런별 작업량을 확인하세요.
+All counts are exact *requested Web Mercator XYZ grid positions*, computed with `src/osm2mbtiles/tiles.py::tile_count`; they are **not the number of nonempty MBTiles records**. Geofabrik extracts follow region polygons; a rectangular bbox may contain cells with no source data. The Berlin main bbox selects a central urban rectangle, **not** the Berlin municipal boundary.
 
-### 공정 비교 실행 규칙
+### How to publish comparable results
 
-1. **동일 입력 고정:** `https://tiles.osm.kr/download/seoul-non-military.osm.pbf`를 1회 다운로드해 복사본을 세 엔진에 사용하고 SHA-256을 기록합니다. 실행마다 다운로드하면 원본 데이터 스냅샷이 달라질 수 있습니다.
-2. **동일 타일 영역 고정:** `--bbox`와 z12–16을 명시적으로 동일하게 설정합니다. Tilemaker의 출력 타일 개수가 더 많아지는 구성 오류를 방지하려고 각 MBTiles의 XYZ 목록을 추출해 **요청한 좌표 집합과 동일한지** 검사합니다. 데이터가 없는 좌표는 엔진별로 생략될 수 있으므로 이 차이도 별도 보고합니다.
-3. **프로필과 버전 고정:** 세 엔진의 코드·Mapbox Vector Tile extent·buffer·압축·태그 필터·레이어별 minzoom·일반화(geometric simplification) 설정과 버전을 기록합니다. 특히 역사적 비교용 `benchmarks/seoul-planetiler.yml`은 `water`에 `natural=rock`까지 넣는 중복 분류가 있으므로 **그대로 품질·동일 작업량 비교에 사용하지 않습니다**. 동일한 데이터 객체를 출력하도록 조정한 공통 스키마 실험을 **별도 트랙**으로 둡니다.
-4. **시간 측정 두 구간:** **(A) 최초 전체 생성 = PBF 읽기 시작 → 결과 MBTiles 기록·종료**; osm2mbtiles는 DB 생성·OSM import·후처리·타일 생성·저장을 포함해야 합니다. **(B) DB 재사용 시 타일 단계**를 별도 지표로 보고합니다. 다운로드·apt 설치·JVM 다운로드는 측정하지 않고, 이 제외 사항을 기록합니다.
-5. **반복성과 동일 자원:** 같은 Ubuntu 버전/CPU/RAM/스토리지(가능하면 고정 사양의 호스트)에서 각 엔진을 **최소 3회** 독립 실행합니다. 입력은 고정하고 출력과 캐시는 별도로 초기화합니다. 3엔진 실행 순서를 교대로 바꾸거나 OS 페이지 캐시 상태를 기록합니다. 우선순위는 **중앙값**, 여유가 있으면 5회와 최소~최대 범위를 병기합니다.
-6. **속도와 품질을 함께:** 중앙값 시간(s), 생성된 비어 있지 않은 타일 수, 시간당/초당 타일 처리량, MBTiles 크기, **최고 RSS 메모리**, 최대 디스크 사용량, CPU 사용률, 전체 레이어별 피처 수, 샘플 타일 지오메트리 비교를 함께 저장합니다. 속도 배수 계산 시 입력 스키마나 작업량이 다른 부분은 명확히 표시합니다.
-7. **PNG는 별도:** Planetiler/Tilemaker와 직접 비교하는 대상은 **Vector MVT/PBF**입니다. PNG는 Mapnik OSM Carto 렌더링, 폰트 및 메타타일 버퍼 비용이 있으므로 같은 벡터 벤치마크에 합산하지 않고 별도 품질·속도 측정을 합니다.
-8. **증분 업데이트는 별도:** `.osc.gz` 변경 1회당 PostGIS append·후처리·dirty 타일 갱신 시간과 변경 범위를 분리하고, 전체 재생성 방식과 비교할 때는 DB 유지 비용을 함께 기록합니다.
+1. Run **same unmodified PBF snapshot**, record byte size, SHA-256, download URL and timestamp. Use exact source filenames from [benchmarks/regions.json](../benchmarks/regions.json).
+2. Pin the versions/commits of osm2mbtiles, Planetiler, Tilemaker, osm2pgsql, PostgreSQL/PostGIS, Java, Lua/JSON/YAML profiles and codec settings. The existing `benchmarks/seoul-planetiler.yml` is a historical **non-equivalent** comparison profile; its broad `natural` rule inflated `water`, so do not use it unchanged to claim data or quality parity.
+3. Align **identical area, zoom range, bbox, tile coordinate system, source and thread budget**. Check actual generated XYZ coordinates for each engine. Do not confuse the total cells requested with populated tiles. Config can cause a tool to emit tiles outside the chosen bbox; detect this.
+4. Report two **separate** performance tracks:
+   - **Cold, end-to-end:** start at reading the already-downloaded PBF and finish at closing the final MBTiles. Include osm2mbtiles's PostGIS initialization, import, materialization and SQLite writes.
+   - **Warm/update:** reuse PostGIS and measure only tile generation. This track is **not** directly compared to Planetiler/Tilemaker's cold end-to-end times.
+5. On the same hardware and storage configuration, perform **at least 3 independent measured runs per engine** (5 preferred), alternate execution order, and publish median + spread. Record disk cold/warm page-cache behavior; do not claim a universal ranking from a hosted runner with variable CPU shares.
+6. Collect elapsed time, CPU time, maximum resident memory, temporary disk peak, final MBTiles size, number of populated tiles, tiles per second, and sampled decoded features/geometry. **Faster with fewer layers** is not a like-for-like correctness comparison.
+7. PNG/Mapnik and MVT/PBF must be measured separately; Planetiler and Tilemaker are **vector benchmarks** here. For comparable vector profiles, either align the feature-selection rules or clearly label **native-profile** outputs as different workloads.
+8. If adding a North American or Asian dataset, freeze an official regional extract and rerun the same protocol. Berlin is a practical *primary sample*, not a comprehensive global representativeness claim.
 
-### 메인 README에 올릴 성능표 작성 원칙
+### Publishable table template (UNMEASURED)
 
-**동일한 메인 범위의 실제 실행이 모두 완료된 후** 3개 엔진의 (A) 최초 전체 생성 중앙값, 출력 타일 수, 파일 크기, 최대 RSS와 하드웨어를 한 표에 넣습니다. PostGIS의 (B) 재사용 타일 생성 시간은 *별도 표*로 표시합니다. 비교용 YAML/Lua와 프로파일 조정 여부를 표 바로 옆에 명시하며, 미측정 결과를 채워 넣지 않습니다.
+| Engine | Cold PBF→MBTiles median | Warm tile-only | Peak RSS | Nonempty tiles | File size | Profile |
+|---|---:|---:|---:|---:|---:|---|
+| osm2mbtiles | **TBD** | TBD | TBD | TBD | TBD | declared detailed vector |
+| Planetiler | **TBD** | N/A | TBD | TBD | TBD | pinned comparison profile |
+| Tilemaker | **TBD** | N/A | TBD | TBD | TBD | pinned comparison profile |
 
-## 58개 벡터 타일, z12–15
+Do not publish performance ratios until the Berlin runs have completed and output differences are documented.
 
-| 엔진 | 1회차 | 2회차 | 중앙값 | 측정 포함 단계 |
-|---|---:|---:|---:|---|
-| osm2mbtiles PostGIS projected | 14.652s | 10.400s | 12.526s | 타일 출력만, DB import 제외 |
-| osm2mbtiles Batch SQL | 1.880s | 1.925s | **1.903s** | 타일 출력만, DB import 제외 |
-| Planetiler 0.10.2 | 15.840s | 10.434s | 13.137s | PBF 읽기 + MBTiles 출력 |
+## Historical measurements (Seoul, 2026-10)
 
-PostGIS 최초 데이터 import + SQL 준비 **12.510s**는 별도입니다.
+The measurements below were **performed on a Seoul extract, not Berlin**. They demonstrate how misleading tile-only vs PBF-to-MBTiles comparisons can be.
 
-## 서울시청 타일 하나: z14/x13970/y6344
+| Workload | Engine | Median | Timed interval |
+|---|---|---:|---|
+| One Seoul City Hall z14 tile | osm2mbtiles PostGIS projected | 1.775 s | **Warm tile stage only**; separate PostGIS import 12.600 s |
+| Same one tile | Planetiler v0.10.2 | 10.355 s | PBF → MBTiles |
+| Same one tile | Tilemaker v2.4 | 5.910 s | PBF → MBTiles |
+| Seoul 58-tile area z12–15 | osm2mbtiles PostGIS projected | 12.526 s | Warm tile stage only |
+| Same 58-tile area | osm2mbtiles Batch SQL | **1.903 s** | Warm tile stage only |
+| Same 58-tile area | Planetiler v0.10.2 | 13.137 s | PBF → MBTiles |
 
-동일한 `seoul-non-military.osm.pbf` 입력, Ubuntu 24.04 CI 환경, 각 프로그램 2회 실행, **각 MBTiles에 정확히 한 타일만 존재하도록 확인**.
+The 58-tile PostGIS import took 12.510 s separately. Differences in data profile, feature selection, start-up, and runtime invalidate raw cross-engine speed ratios. **These historical figures are not evidence of Berlin performance.**
 
-| 엔진 | Run 1 | Run 2 | 중앙값 | 조건 |
-|---|---:|---:|---:|---|
-| Tilemaker 2.4 | 5.990s | 5.830s | **5.910s** | PBF→MBTiles |
-| Planetiler 0.10.2 | 11.530s | 9.180s | 10.355s | PBF→MBTiles |
-| osm2mbtiles PostGIS | 2.870s | 0.680s | 1.775s | 데이터 import **제외** |
-
-PostGIS 최초 import + 후처리는 **12.600s** (DB 자체 초기화 제외). `12.600 + 2.870 = 15.470s`는 분리 측정 구간의 단순 합산일 뿐 하나의 동일한 환경 E2E 실행 시간은 아닙니다.
-
-소스·실행 기록: [GitHub Actions 40826487496](https://github.com/nssang00/chatgpt-write-test/actions/runs/40826487496), 분석 코드 `benchmarks/seoul_three_way_tile.py`, `benchmarks/seoul_generation_speed.py`.
-
-### 성능표 해석 주의
-
-1. **서로 다른 작업량:** Planetiler YAML / Tilemaker Lua 프로필과 osm2mbtiles SQL은 레이어 수 및 피처 선정이 다름. 같은 입력 PBF와 z/x/y라도 동일 객체를 동일 방식으로 처리한다고 말할 수 없음.
-2. **PostGIS import 제외:** 이미 DB가 준비된 경우의 타일 출력 속도만 `1.775s`이며, PBF 입력부터의 성능은 이보다 느림.
-3. **타일 1개:** 시작 비용과 원본 PBF 읽기가 지배적. 적은 반복수이므로 순위나 배수는 전국 규모 결과로 일반화할 수 없음.
-4. **PNG:** 이 표는 Vector PBF 전용. PNG Mapnik 렌더링을 포함한 경쟁 엔진과의 속도 비교 수치는 아직 없음.
-5. **증분:** `.osc.gz`에서 변경된 일부 타일만 기록하는 방식은 전체 재생성과 비교하려면 같은 변경 유형, DB 보유 비용, 새로 그리는 타일 수를 포함해야 함.
-6. **실험용 Planetiler 프로필:** `benchmarks/seoul-planetiler.yml`의 기존 `natural: '%'` 조건은 바위·모래·숲을 `water`에도 출력하므로 의미론적으로 동등하지 않음. 예전 동일 타일 실측 수치는 이 프로필의 결과이며, 레이어 정확도 품질 지표로 활용하지 말 것.
-
-### 검증된 지도 데이터 분류 차이
-
-같은 서울 타일에서 `water` (osm2mbtiles 13 vs Planetiler 265), `landcover` (130 vs 252), `boundary` (15 vs 146)를 추가로 분석. 대부분은 다른 태그 필터 및 relation/way 분할 방식 때문이었고, 실제 개선 대상 `natural=rock`과 법적 경계 별도 표현은 **이번 이관에서 코드에 추가**. 따라서 **이전 실측 피처 수를 업데이트 후 출력 피처 수로 재사용하면 안 됨**. 적용 후 실증 비교는 별도로 필요.
-
-진단 소스 및 실증 결과: [GitHub Actions 40829971952](https://github.com/nssang00/chatgpt-write-test/actions/runs/40829971952).
-
-## 보완 레이어 실제 재생성 결과 (동일 서울시청 타일)
-
-이관 후 새로운 PostGIS Vector SQL로 z14/x13970/y6344를 실생성했습니다.
-
-| 레이어 | 이전 | 이관 후 | 검증 |
-|---|---:|---:|---|
-| water | 13 | 13 | 물 필터 유지 |
-| landcover | 130 | 235 | `natural=rock` **105개 추가** |
-| boundary | 15 | 15 | 행정 경계 유지 |
-| boundary_legal | 없음 | 80 | 법적 경계 별도 레이어 |
-
-[실제 서울 PBF + PostgreSQL/PostGIS CI](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686). 추가 레이어는 기존 Planetiler 비교 프로필과 동일한 출력 스키마를 의미하지 않습니다.
+Evidence: [one-tile generation benchmark](https://github.com/nssang00/chatgpt-write-test/actions/runs/40826487496), [Seoul natural/boundary checks](https://github.com/nssang00/chatgpt-write-test/actions/runs/40829971952).

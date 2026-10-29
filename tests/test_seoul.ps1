@@ -63,7 +63,7 @@ try {
         $env:OSM2MBTILES_BBOX = '126.75,37.40,127.20,37.72'
     }
     Write-Host "[SEOUL] Generating tile-type=$TileType zoom=$Zoom vector-engine=$env:OSM2MBTILES_VECTOR_TILER bbox=$env:OSM2MBTILES_BBOX" -ForegroundColor Cyan
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run_windows.ps1') $pbf $Zoom
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $project 'tools/run_windows.ps1') $pbf $Zoom
     if ($LASTEXITCODE -ne 0) { throw "WSL converter exited with code $LASTEXITCODE" }
     $stem = Join-Path $outputDir 'seoul-non-military'
     $expected = @()

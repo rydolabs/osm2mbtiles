@@ -80,8 +80,8 @@ def test_total_time_on_success_and_failure(capsys, monkeypatch):
 
 def test_seoul_batch_and_download_wrapper_are_present():
     root = Path(__file__).resolve().parents[1]
-    bat = (root / "test-seoul.bat").read_text(encoding="utf-8")
-    runner = (root / "tools" / "test_seoul.ps1").read_text(encoding="utf-8")
+    bat = (root / "tests" / "test-seoul.bat").read_text(encoding="utf-8")
+    runner = (root / "tests" / "test_seoul.ps1").read_text(encoding="utf-8")
     assert "test_seoul.ps1" in bat
     assert "seoul-non-military.osm.pbf" in runner
     assert "tiles.osm.kr/download/seoul-non-military.osm.pbf" in runner
@@ -119,7 +119,7 @@ def test_explicit_bbox_dry_run_does_not_require_header_bbox(tmp_path, capsys):
 
 def test_seoul_launcher_has_explicit_bbox_and_wsl_forwards_it():
     root = Path(__file__).resolve().parents[1]
-    seoul = (root / "tools" / "test_seoul.ps1").read_text(encoding="utf-8")
+    seoul = (root / "tests" / "test_seoul.ps1").read_text(encoding="utf-8")
     windows = (root / "tools" / "run_windows.ps1").read_text(encoding="utf-8")
     linux = (root / "tools" / "run_wsl.sh").read_text(encoding="utf-8")
     assert "126.75,37.40,127.20,37.72" in seoul
@@ -128,3 +128,15 @@ def test_seoul_launcher_has_explicit_bbox_and_wsl_forwards_it():
     assert 'BBOX_ARGS=(--bbox "$BBOX")' in linux
     assert linux.count('"${BBOX_ARGS[@]}"') >= 2
     assert "Failed command at run_wsl.sh:" in linux
+
+
+def test_manual_seoul_launcher_uses_repository_root_and_shared_windows_runner():
+    root = Path(__file__).resolve().parents[1]
+    bat = (root / "tests" / "test-seoul.bat").read_text(encoding="utf-8")
+    ps = (root / "tests" / "test_seoul.ps1").read_text(encoding="utf-8")
+    assert not (root / "test-seoul.bat").exists()
+    assert not (root / "tools" / "test_seoul.ps1").exists()
+    assert 'cd /d "%~dp0.."' in bat
+    assert '%~dp0test_seoul.ps1' in bat
+    assert "$project = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path" in ps
+    assert "(Join-Path $project 'tools/run_windows.ps1')" in ps

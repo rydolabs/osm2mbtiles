@@ -37,3 +37,12 @@ def test_windows_launcher_and_dependencies_present():
     assert 'tools/stage_from_system.py' in shell
     assert 'osm2mbtiles verify' in shell
     assert 'if [[ $# -lt 7 || $# -gt 13 ]]' in shell  # PowerShell passes 9 arguments
+
+def test_generic_windows_launcher_does_not_implicitly_download_a_country():
+    script = (ROOT / 'tools' / 'run_windows.ps1').read_text(encoding='utf-8')
+    bat = (ROOT / 'run.bat').read_text(encoding='utf-8')
+    assert "if ($PbfPath -eq 'south-korea')" in script
+    assert "$pbf = Resolve-Pbf $PbfPath" in script
+    assert 'if ([string]::IsNullOrWhiteSpace($PbfPath)) {' not in script
+    assert 'select a local *.osm.pbf' in bat
+    assert 'run.bat south-korea' in bat

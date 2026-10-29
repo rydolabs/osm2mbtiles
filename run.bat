@@ -4,10 +4,10 @@ chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 title osm2mbtiles - Docker-free Raster and Vector MBTiles
 
-rem Double-click: auto-download South Korea PBF and write south-korea-latest.mbtiles.
-rem Optional: drag a *.osm.pbf file onto run.bat to use a different input.
-rem Optional: run.bat 0-12 to override zoom for automatic South Korea conversion.
-rem Optional: run.bat vector [0-15] or run.bat both [0-15].
+rem Double-click: select a local *.osm.pbf (or auto-use the only local one).
+rem Optional: drag a *.osm.pbf file onto run.bat to convert any region.
+rem Explicit legacy download: run.bat south-korea (downloads Geofabrik extract).
+rem Optional: run.bat vector [0-15] or run.bat both [0-15] to choose a PBF.
 rem Or set OSM2MBTILES_FORMAT=vector|raster|both (default raster).
 rem Optional environment settings: OSM2MBTILES_ZOOM, OSM2MBTILES_PROCESSES
 rem Cache cleanup after successful output verification and Windows copy:
