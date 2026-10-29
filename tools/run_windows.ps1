@@ -43,9 +43,10 @@ function Resolve-Pbf([string]$requested) {
     }
 }
 
-# Double-click defaults to the Geofabrik South Korea extract. Explicit PBF
-# drag-and-drop still works; the launcher never opens a picker by default.
-# For convenience, run.bat 0-12 means auto-download with a custom zoom.
+# Global default: select an existing local OSM PBF (or auto-use the sole
+# *.osm.pbf in the project directory). Do not implicitly download a country.
+# Legacy South Korea download remains explicit: run.bat south-korea.
+# run.bat vector / both can also choose a local PBF.
 $format = if ($env:OSM2MBTILES_FORMAT) { $env:OSM2MBTILES_FORMAT.ToLowerInvariant() } else { 'raster' }
 if ($PbfPath -in @('raster','vector','both')) {
     $format = $PbfPath
@@ -56,11 +57,12 @@ if ($PbfPath -match '^\d+(?:-\d+)?$' -and -not $ZoomOverride) {
     $ZoomOverride = $PbfPath
     $PbfPath = ''
 }
-if ([string]::IsNullOrWhiteSpace($PbfPath)) {
+if ($PbfPath -eq 'south-korea') {
     $pbf = '--geofabrik-south-korea'
     $inputLabel = 'https://download.geofabrik.de/asia/south-korea-latest.osm.pbf'
     $output = Join-Path $project 'south-korea-latest.mbtiles'
 } else {
+    # Generic default: choose a local OSM PBF instead of assuming a country.
     $pbf = Resolve-Pbf $PbfPath
     $inputLabel = $pbf
     $filename = [System.IO.Path]::GetFileName($pbf)
