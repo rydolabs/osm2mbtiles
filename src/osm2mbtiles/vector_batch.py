@@ -92,6 +92,52 @@ def microbatches(bbox, lo: int, hi: int, side: int = 2):
                 yield z, cells
 
 
+def spatial_shards(bbox, lo: int, hi: int, side: int = 2,
+                   group_zoom: int = 11, max_batches: int = 32):
+    """Group EXISTING SQL microbatches spatially without changing their cells.
+
+    Each shard runs as one Pool job so a worker keeps processing nearby tiles.
+    Split overloaded z11 parents into deeper quadtree regions (z12, z13 ...)
+    based on SQL batch count, not claimed OSM feature density. Boundary batches
+    are assigned by their first tile; their actual SQL cell lists are unchanged.
+    """
+    if not 0 <= group_zoom <= 22:
+        raise ValueError("spatial shard group_zoom must be 0..22")
+    if not 1 <= max_batches <= 256:
+        raise ValueError("spatial shard max_batches must be 1..256")
+
+    def split(z, level, jobs):
+        if len(jobs) <= max_batches or level >= z:
+            yield jobs
+            return
+        next_level = level + 1
+        buckets = {}
+        for job in jobs:
+            x, y = job[1][0]
+            parent = (x >> (z - next_level), y >> (z - next_level))
+            buckets.setdefault(parent, []).append(job)
+        for bucket in buckets.values():
+            yield from split(z, next_level, bucket)
+
+    for z in range(lo, hi + 1):
+        level = min(group_zoom, z)
+        parents = {}
+        for job in microbatches(bbox, z, z, side):
+            x, y = job[1][0]
+            parent = (x >> (z - level), y >> (z - level))
+            parents.setdefault(parent, []).append(job)
+        for parent_jobs in parents.values():
+            yield from split(z, level, parent_jobs)
+
+
+def _render_spatial_shard(shard):
+    """Keep a Z11+ neighborhood on one DB connection; preserve 2x2 SQL calls."""
+    result = []
+    for job in shard:
+        result.extend(_render_batch(job))
+    return result
+
+
 def _init_worker():
     global _conn, _queries
     import psycopg2
@@ -142,10 +188,18 @@ def _render_batch(job):
 
 
 def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
-                 processes: int, side: int = 2):
+                 processes: int, side: int = 2, *,
+                 spatial_shard_zoom: int | None = None,
+                 spatial_shard_max_batches: int = 32):
     """Export batch MVT with one SQLite writer and atomic file replacement."""
     if not 1 <= processes <= 64:
         raise ValueError("workers must be 1..64")
+    if spatial_shard_zoom is not None:
+        if not 0 <= spatial_shard_zoom <= 22:
+            raise ValueError("spatial shard zoom must be 0..22")
+        if not 1 <= spatial_shard_max_batches <= 256:
+            raise ValueError("spatial shard max_batches must be 1..256")
+
     partial = out.with_name(out.name + ".partial")
     partial.unlink(missing_ok=True)
     total = tile_count(bbox, lo, hi)
@@ -160,8 +214,18 @@ def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
         with sqlite3.connect(partial) as conn:
             create_db(conn, metadata(out.stem, bbox, lo, hi))
             # One writer owns SQLite. The workers only return gzip-compressed MVT.
-            jobs = pool.imap_unordered(
-                _render_batch, microbatches(bbox, lo, hi, side), chunksize=1)
+            if spatial_shard_zoom is None:
+                tasks = microbatches(bbox, lo, hi, side)
+                worker_function = _render_batch
+            else:
+                tasks = spatial_shards(
+                    bbox, lo, hi, side=side, group_zoom=spatial_shard_zoom,
+                    max_batches=spatial_shard_max_batches)
+                worker_function = _render_spatial_shard
+                print(f"[SPATIAL] group_zoom={spatial_shard_zoom} "
+                      f"max_batches_per_shard={spatial_shard_max_batches} "
+                      f"workers={processes} side={side}", flush=True)
+            jobs = pool.imap_unordered(worker_function, tasks, chunksize=1)
             last = time.monotonic()
             for batch in jobs:
                 worker_wait_seconds += time.monotonic() - last
