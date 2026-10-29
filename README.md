@@ -94,20 +94,21 @@ python3 -m osm2mbtiles.vector_incremental flush \
 
 생성·수정·삭제 변경의 만료 타일을 계산하고 MBTiles에 UPSERT/DELETE합니다. 실제 `.osc.gz`를 사용한 새로 생성한 MBTiles와의 정합성 검증이 [CI에서 통과](https://github.com/nssang00/chatgpt-write-test/actions/runs/40828739306)했습니다. **PNG 증분, OSM replication sequence 자동 다운로드/검증, 전국 규모 무중단 갱신은 지원하지 않습니다.** 중간 import 실패 후에는 동일 변경 파일을 무조건 재시도하면 안 됩니다. 변경된 Vector SQL을 사용하는 새 버전으로 업그레이드하면 증분 DB 전체 재생성이 필요할 수 있습니다.
 
-## 성능 — 검증된 범위만 비교
+## 성능 비교 — osm2mbtiles / Planetiler / Tilemaker
 
-실제 서울 PBF 테스트의 결과입니다. 수치만으로 엔진 전체의 우열을 주장하지 않습니다.
+동일한 실제 서울 OSM PBF와 동일한 **z/x/y**를 사용한 기존 Vector MVT 벤치마크 결과입니다. 세 엔진의 **레이어 프로필과 피처 수가 다르므로 작업량이 완전히 동일한 비교는 아닙니다.**
 
-| 측정 대상 | 방식 | 중앙값 | 측정 범위 |
-|---|---|---:|---|
-| 서울 일부 지역 z12–15, 58타일 | PostGIS 기존 방식 | 12.526초 | **DB import 제외** |
-| 동일 58타일 | PostGIS Batch | **1.903초** | **DB import 제외** |
-| 동일 58타일 | Planetiler 커스텀 프로필 | 13.137초 | **PBF부터 MBTiles까지** |
-| 서울시청 z14/13970/6344, 1타일 | Tilemaker | **5.910초** | PBF부터 MBTiles까지 |
-| 동일 1타일 | Planetiler | **10.355초** | PBF부터 MBTiles까지 |
-| 동일 1타일 | PostGIS | **1.775초** | **DB import 제외** |
+| 엔진 | 서울시청 z14 타일 1개 (2회 중앙값) | 측정 범위 |
+|---|---:|---|
+| osm2mbtiles PostGIS | **1.775초** | **PostGIS import 완료 후** 타일 생성만 |
+| Planetiler v0.10.2 | 10.355초 | PBF 읽기부터 Vector MBTiles 저장까지 |
+| Tilemaker v2.4 | 5.910초 | PBF 읽기부터 Vector MBTiles 저장까지 |
 
-58타일 실험의 일회성 PostGIS import는 별도 12.510초, 1타일 실험은 별도 12.600초였습니다. **PostGIS 타일 전용 시간과 Planetiler/Tilemaker 전체 실행 시간을 직접 비교하면 불공정**합니다. 스타일/출력 피처 개수도 다릅니다. 자세한 측정 방법, 리소스 및 비교의 한계는 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)를 참고하세요.
+> **주의:** PostGIS의 1.775초와 나머지 두 엔진의 시간을 전체 실행 성능으로 직접 비교하면 안 됩니다. 기존 1타일 실험에서 PostGIS 최초 import + 후처리는 별도 12.600초였고, DB 초기화는 포함되지 않았습니다. 이 표는 z14/13970/6344 한 타일의 실제 측정치이지 전국·서울 전체 성능 순위가 아닙니다.
+
+**더 의미 있는 공식 벤치마크로 권장하는 범위는 서울 비교 권역 `126.75,37.40,127.20,37.72`, z12–16 (사각형 범위의 XYZ 격자 8,418개)**입니다. 세 엔진 모두 같은 PBF 스냅샷, BBOX, 줌, 쓰레드 수로 **PBF→Vector MBTiles 전체 시간**을 측정하고, osm2mbtiles는 PostGIS import와 타일 생성 시간을 별도로 기록하는 방식을 권장합니다. 1차 확인용 도심 BBOX `126.95,37.51,127.05,37.60`는 z12–16에서 561개 격자입니다.
+
+**이 범위의 3엔진 결과는 아직 측정 전입니다.** 자세한 58타일 실험, 비교 시 레이어 차이와 재현성 조건은 [벤치마크 방법 및 기존 결과](docs/BENCHMARKS.md)를 참고하세요. 이 비교는 Vector **PBF만** 대상으로 하며 Mapnik **PNG 렌더링 성능은 별도의 벤치마크**가 필요합니다.
 
 ## 개발·검증
 
