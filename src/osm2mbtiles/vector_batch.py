@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import multiprocessing
+import re
 import os
 import sqlite3
 import sys
@@ -22,6 +23,11 @@ from .vector import (
 
 _conn = None
 _queries = {}
+
+# Write batches are independent of 2x2 SQL microbatches and SQLite transactions.
+# The previous writer committed after 128 nonempty tiles.
+SQLITE_INSERT_BATCH = 256
+SQLITE_COMMIT_BATCH = 1024
 
 
 def batch_query(z: int, count: int, *, projected: bool = True) -> str:
@@ -94,16 +100,45 @@ def _init_worker():
     _queries = {}
 
 
+def _prepare_batch(cur, z: int, count: int) -> tuple[str, str]:
+    """PREPARE once per worker connection/zoom/batch shape.
+
+    Named statements live on the worker's PostgreSQL connection. Parameters
+    stay bound at EXECUTE time; never interpolate tile coordinates into SQL.
+    """
+    key = (z, count)
+    cached = _queries.get(key)
+    if cached is not None:
+        return cached
+    sql = batch_query(z, count)
+    placeholders = iter(range(1, count * 2 + 1))
+    prepared = re.sub(r"%s::integer",
+                      lambda _: f"${next(placeholders)}::integer", sql)
+    name = f"mvt_z{z}_n{count}"
+    cur.execute(
+        f"PREPARE {name} ({', '.join(['integer'] * (count * 2))}) AS {prepared}")
+    execute = f"EXECUTE {name} ({', '.join(['%s'] * (count * 2))})"
+    _queries[key] = (name, execute)
+    return _queries[key]
+
+
+def _gzip_batch_rows(z, rows):
+    """Compress MVT in independent SQL workers; preserve byte-for-byte gzip output."""
+    return [(z, int(x), int(y),
+             gzip.compress(bytes(data), compresslevel=6, mtime=0) if data else b"")
+            for x, y, data in rows]
+
+
 def _render_batch(job):
     z, cells = job
-    sql = _queries.setdefault((z, len(cells)), batch_query(z, len(cells)))
     args = [value for pair in cells for value in pair]
     with _conn.cursor() as cur:
-        cur.execute(sql, args)
+        _, execute = _prepare_batch(cur, z, len(cells))
+        cur.execute(execute, args)
         rows = cur.fetchall()
     if {(x, y) for x, y, _ in rows} != set(cells):
         raise RuntimeError("batch SQL returned missing or duplicate tile coordinates")
-    return [(z, int(x), int(y), bytes(data or b"")) for x, y, data in rows]
+    return _gzip_batch_rows(z, rows)
 
 
 def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
@@ -114,34 +149,62 @@ def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
     partial = out.with_name(out.name + ".partial")
     partial.unlink(missing_ok=True)
     total = tile_count(bbox, lo, hi)
-    seen = written = pending = 0
+    seen = written = pending = commits = 0
+    insert_seconds = commit_seconds = worker_wait_seconds = 0.0
+    insert_calls = 0
+    rows_to_insert = []
+    insert_sql = "INSERT INTO tiles VALUES (?,?,?,?)"
     start = time.monotonic()
     ctx = multiprocessing.get_context("spawn" if sys.platform == "win32" else "fork")
     with ctx.Pool(processes=processes, initializer=_init_worker) as pool:
         with sqlite3.connect(partial) as conn:
             create_db(conn, metadata(out.stem, bbox, lo, hi))
-            for batch in pool.imap_unordered(
-                    _render_batch, microbatches(bbox, lo, hi, side), chunksize=1):
+            # One writer owns SQLite. The workers only return gzip-compressed MVT.
+            jobs = pool.imap_unordered(
+                _render_batch, microbatches(bbox, lo, hi, side), chunksize=1)
+            last = time.monotonic()
+            for batch in jobs:
+                worker_wait_seconds += time.monotonic() - last
                 for z, x, y, data in batch:
                     seen += 1
                     if data:
-                        conn.execute(
-                            "INSERT INTO tiles VALUES (?,?,?,?)",
-                            (z, x, (1 << z)-1-y,
-                             sqlite3.Binary(gzip.compress(data, compresslevel=6, mtime=0))))
+                        rows_to_insert.append(
+                            (z, x, (1 << z) - 1 - y, sqlite3.Binary(data)))
                         written += 1
-                        pending += 1
-                if pending >= 128:
+                if len(rows_to_insert) >= SQLITE_INSERT_BATCH:
+                    stamp = time.monotonic()
+                    conn.executemany(insert_sql, rows_to_insert)
+                    insert_seconds += time.monotonic() - stamp
+                    insert_calls += 1
+                    pending += len(rows_to_insert)
+                    rows_to_insert.clear()
+                if pending >= SQLITE_COMMIT_BATCH:
+                    stamp = time.monotonic()
                     conn.commit()
+                    commit_seconds += time.monotonic() - stamp
+                    commits += 1
                     pending = 0
+                last = time.monotonic()
             if seen != total:
                 raise RuntimeError(f"batch export incomplete: {seen}/{total}")
+            if rows_to_insert:
+                stamp = time.monotonic()
+                conn.executemany(insert_sql, rows_to_insert)
+                insert_seconds += time.monotonic() - stamp
+                insert_calls += 1
+                pending += len(rows_to_insert)
+            stamp = time.monotonic()
             conn.commit()
+            commit_seconds += time.monotonic() - stamp
+            commits += 1
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.execute("PRAGMA journal_mode=DELETE")
             result = conn.execute("PRAGMA integrity_check").fetchone()[0]
             if result != "ok":
                 raise RuntimeError("batch MBTiles integrity_check: " + result)
+    print(f"[BATCH WRITER] insert_calls={insert_calls}, commits={commits}, "
+          f"insert_seconds={insert_seconds:.3f}, commit_seconds={commit_seconds:.3f}, "
+          f"worker_wait_seconds={worker_wait_seconds:.3f}", flush=True)
     os.replace(partial, out)
     print(f"[BATCH] {written}/{total} nonempty tiles, "
           f"{time.monotonic()-start:.2f}s, {out.stat().st_size} bytes", flush=True)
