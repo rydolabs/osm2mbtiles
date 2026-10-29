@@ -1,0 +1,167 @@
+name: Tokyo Kanto z12-16 Vector Three Engine Pilot
+
+on:
+  push:
+    branches: [bench/tokyo-kanto-z12-16]
+    paths:
+      - '.github/workflows/tokyo-vector-pilot.yml'
+      - 'benchmarks/tokyo-planetiler.yml'
+      - 'benchmarks/tokyo_runner_report.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tokyo-three-engine-pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    env:
+      WORK: /tmp/tokyo-vector
+      BBOX: '139.55,35.55,139.95,35.85'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Install real tilers, PostGIS and decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql tilemaker \
+            python3-psycopg2 python3-pip curl ca-certificates time
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+          mkdir -p "$WORK"
+          df -h "$WORK"
+          free -h
+          tilemaker --version || true
+          osm2pgsql --version
+      - name: Download ONE source snapshot and pin three comparison profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          test "$(stat -c %s "$WORK/kanto.osm.pbf")" -gt 300000000
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/input.sha256"
+          curl -fL --retry 3 --max-time 300 \
+            https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar \
+            -o "$WORK/planetiler.jar"
+          for name in config-openmaptiles.json process-openmaptiles.lua; do
+            curl -fL --retry 3 --connect-timeout 20 \
+              "https://raw.githubusercontent.com/systemed/tilemaker/v2.4.0/resources/$name" \
+              -o "$WORK/$name"
+          done
+          /usr/bin/python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          w = Path(os.environ["WORK"])
+          profile = json.loads((w / "config-openmaptiles.json").read_text())
+          removed = [k for k, v in profile["layers"].items() if v.get("source")]
+          profile["layers"] = {k:v for k,v in profile["layers"].items() if k not in removed}
+          profile["settings"].update(minzoom=12, maxzoom=16, basezoom=14)
+          (w / "config-openmaptiles-local.json").write_text(json.dumps(profile))
+          print("TILEMAKER_EXTERNAL_SHAPEFILE_LAYERS_EXCLUDED", removed, flush=True)
+          PY
+          df -h "$WORK"
+      - name: osm2mbtiles real initial PostGIS import then optimized region MVT output
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PGHOST="$WORK/socket" PGPORT=55484 PGUSER=tokyobench PGDATABASE=gis
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          mkdir -p "$PGHOST"
+          /usr/bin/time -f '%e %M' -o "$WORK/osm2mbtiles-import.time" \
+            timeout 1800 bash -euo pipefail -c '
+              initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+              pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+                -o "-c listen_addresses=localhost -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB" start
+              createdb gis
+              psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+              osm2pgsql --slim --drop --cache=384 --number-processes=4 \
+                -O flex -S "$GITHUB_WORKSPACE/vector/vector-flex.lua" -d gis "$WORK/kanto.osm.pbf"
+              psql -v ON_ERROR_STOP=1 -f "$GITHUB_WORKSPACE/vector/post-import.sql"
+            ' > "$WORK/postgis-import.log" 2>&1
+          df -h "$WORK"
+          /usr/bin/python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          w=Path(os.environ["WORK"])
+          job=dict(pbf=str(w/"kanto.osm.pbf"),output=str(w/"osm2mbtiles.mbtiles"),
+                   bbox=[139.55,35.55,139.95,35.85],minzoom=12,maxzoom=16,
+                   processes=4,tiler="batch",batch_side=2)
+          (w/"osm2mbtiles-job.json").write_text(json.dumps(job))
+          PY
+          /usr/bin/time -f '%e %M' -o "$WORK/osm2mbtiles.time" \
+            timeout 1800 env OSM2MBTILES_VECTOR_QUERY_MODE=projected \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/src/osm2mbtiles/vector_worker.py" \
+            "$WORK/osm2mbtiles-job.json" > "$WORK/osm2mbtiles.log" 2>&1
+          tail -n 12 "$WORK/osm2mbtiles.log"
+          pg_ctl -D "$WORK/pgdata" -m immediate -w stop
+          rm -rf "$WORK/pgdata" "$WORK/socket"
+          df -h "$WORK"
+      - name: Planetiler v0.10.2 custom Tokyo profile, same source and tile rectangle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK/planetiler-work"
+          ln -s "$WORK/kanto.osm.pbf" "$WORK/planetiler-work/kanto.osm.pbf"
+          (
+            cd "$WORK/planetiler-work"
+            /usr/bin/time -f '%e %M' -o "$WORK/planetiler.time" \
+              timeout 1800 java -Xmx5g -jar "$WORK/planetiler.jar" generate-custom \
+              --schema="$GITHUB_WORKSPACE/benchmarks/tokyo-planetiler.yml" \
+              --output="$WORK/planetiler.mbtiles" \
+              --bounds="$BBOX" --minzoom=12 --maxzoom=16 \
+              --threads=4 --tmpdir="$WORK/planetiler-tmp" --force
+          ) > "$WORK/planetiler.log" 2>&1
+          tail -n 16 "$WORK/planetiler.log"
+          rm -rf "$WORK/planetiler-tmp" "$WORK/planetiler-work"
+          df -h "$WORK"
+      - name: Tilemaker v2.4 OMT-like profile, same source and tile rectangle
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd "$WORK"
+            /usr/bin/time -f '%e %M' -o "$WORK/tilemaker.time" \
+              timeout 1800 tilemaker \
+              --input "$WORK/kanto.osm.pbf" --output "$WORK/tilemaker.mbtiles" \
+              --config "$WORK/config-openmaptiles-local.json" \
+              --process "$WORK/process-openmaptiles.lua" \
+              --bbox "$BBOX" --threads 4
+          ) > "$WORK/tilemaker.log" 2>&1
+          tail -n 16 "$WORK/tilemaker.log"
+          df -h "$WORK"
+      - name: Validate exact requested XYZ range and publish measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE/src" \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/tokyo_runner_report.py" "$WORK"
+          cat "$WORK/tokyo-benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$WORK/tokyo-benchmark.md"
+      - name: Save compact proof, timings and error logs without large PBF/MBTiles
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p tokyo-pilot-evidence
+          for f in input.sha256 tokyo-benchmark.json tokyo-benchmark.md \
+                   postgis-import.log osm2mbtiles.log planetiler.log tilemaker.log postgres.log; do
+            cp "$WORK/$f" tokyo-pilot-evidence/ 2>/dev/null || true
+          done
+          cp "$WORK"/*.time tokyo-pilot-evidence/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tokyo-kanto-z12-16-three-engine-pilot
+          path: tokyo-pilot-evidence/
+          retention-days: 14
+          if-no-files-found: warn
