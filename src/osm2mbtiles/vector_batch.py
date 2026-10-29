@@ -136,7 +136,10 @@ def _render_batch(job):
         _, execute = _prepare_batch(cur, z, len(cells))
         cur.execute(execute, args)
         rows = cur.fetchall()
-    if {(x, y) for x, y, _ in rows} != set(cells):
+    # A set-only check misses duplicate SQL rows when every requested XYZ is
+    # also present. Refuse silent duplicate output before touching SQLite.
+    coords = [(x, y) for x, y, _ in rows]
+    if len(coords) != len(cells) or set(coords) != set(cells):
         raise RuntimeError("batch SQL returned missing or duplicate tile coordinates")
     return _gzip_batch_rows(z, rows)
 

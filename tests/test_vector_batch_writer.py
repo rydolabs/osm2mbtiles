@@ -128,3 +128,31 @@ def test_writer_content_and_commit_count_on_1025_tiles(tmp_path, monkeypatch):
         data = list(db.execute("SELECT tile_data FROM tiles ORDER BY tile_column"))
         assert len(data) == total
         assert all(blob == packed for (blob,) in data)
+
+
+def test_render_batch_rejects_extra_duplicate_sql_rows(monkeypatch):
+    """A set-equality check alone used to accept duplicates of requested XYZ."""
+    import pytest
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql, params):
+            assert params == [10, 20, 11, 20]
+
+        def fetchall(self):
+            # Every requested coordinate exists, yet one row is duplicated.
+            return [(10, 20, b"a"), (11, 20, b"b"), (10, 20, b"a")]
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(v, "_conn", FakeConnection())
+    monkeypatch.setattr(v, "_prepare_batch", lambda *args: ("stmt", "EXECUTE stmt"))
+    with pytest.raises(RuntimeError, match="duplicate"):
+        v._render_batch((14, [(10, 20), (11, 20)]))

@@ -12,6 +12,7 @@ import gzip
 import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 import shutil
 import subprocess
@@ -121,6 +122,45 @@ def sql_scalar(statement):
             return cur.fetchone()[0]
 
 
+def exact_tile_bytes(path: Path):
+    """Full gzip-MVT row bytes, keyed by XYZ; tiny synthetic fixture only.
+
+    Compare SQLite *contents*, not entire file SHA: SQLite page/layout order
+    need not be identical for archives created by different write schedules.
+    """
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok", path
+        meta = dict(db.execute("SELECT name,value FROM metadata"))
+        tiles = {}
+        for z, x, tms_y, data in db.execute(
+                "SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles"):
+            xyz = (z, x, (1 << z) - 1 - tms_y)
+            assert xyz not in tiles, ("duplicate XYZ", xyz)
+            assert data[:2] == b"\\x1f\\x8b", ("gzip header missing", xyz)
+            tiles[xyz] = bytes(data)
+    return tiles, meta
+
+
+def compare_exact_tile_bytes(reference: Path, candidate: Path):
+    left, meta_left = exact_tile_bytes(reference)
+    right, meta_right = exact_tile_bytes(candidate)
+    # The name comes from the output filename and is legitimately different.
+    meta_left.pop("name", None)
+    meta_right.pop("name", None)
+    different = sorted(
+        xyz for xyz in left.keys() | right.keys()
+        if left.get(xyz) != right.get(xyz))
+    return {
+        "equal": not different and meta_left == meta_right,
+        "metadata_equal_except_archive_name": meta_left == meta_right,
+        "reference_tiles": len(left), "candidate_tiles": len(right),
+        "different_tile_payload_bytes": len(different),
+        "first_differences_xyz": different[:20],
+        "comparison": "every gzip-compressed tile_data BLOB and XYZ row; "
+                      "metadata exact except output archive name",
+    }
+
+
 def compare_delta(old, new, dirty):
     changed = {
         tile for tile in old.keys() | new.keys()
@@ -155,6 +195,7 @@ def run(work: Path):
     inc.init(initial, inc_archive, BBOX, LO, HI, processes=2)
     report["init_sec"] = round(time.perf_counter() - started, 3)
     before, _, report["initial_stats"] = content_signature(inc_archive)
+    initial_raw, initial_meta = exact_tile_bytes(inc_archive)
     save()
     started = time.perf_counter()
     inc.append(diff, inc_archive, flush=False)
@@ -185,8 +226,30 @@ def run(work: Path):
     assert sql_scalar("SELECT count(*) FROM vector_expired_tiles") == 0
     assert sql_scalar("SELECT phase FROM osm2mbtiles_vector_sync") == "idle"
     report["delta"] = compare_delta(before, content_signature(inc_archive)[0], expired)
+    updated_raw, updated_meta = exact_tile_bytes(inc_archive)
+    # Even a semantically unchanged tile must retain its exact stored bytes
+    # unless osm2pgsql explicitly expired it. This prevents accidental
+    # rewrites of unrelated tiles or gzip header/feature-order churn.
+    outside_dirty = sorted(
+        xyz for xyz in initial_raw.keys() | updated_raw.keys()
+        if xyz not in expired and initial_raw.get(xyz) != updated_raw.get(xyz))
+    raw_changes = {
+        xyz for xyz in initial_raw.keys() | updated_raw.keys()
+        if initial_raw.get(xyz) != updated_raw.get(xyz)
+    }
+    report["raw_delta"] = {
+        "actual_changed_gzip_tiles": len(raw_changes),
+        "dirty_covers_all_byte_changes": raw_changes <= expired,
+        "unchanged_outside_dirty": len(outside_dirty) == 0,
+        "outside_dirty_first_differences": outside_dirty[:20],
+        "metadata_unchanged": initial_meta == updated_meta,
+    }
+    save()
     assert report["delta"]["dirty_covers_all_changes"], report["delta"]
     assert report["delta"]["actual_changed_tiles"] > 0
+    assert report["raw_delta"]["dirty_covers_all_byte_changes"], report["raw_delta"]
+    assert report["raw_delta"]["unchanged_outside_dirty"], report["raw_delta"]
+    assert report["raw_delta"]["metadata_unchanged"], report["raw_delta"]
     # The same OSC must never be applied twice.
     try:
         inc.append(diff, inc_archive, flush=False)
@@ -194,11 +257,18 @@ def run(work: Path):
         assert "same diff twice" in str(exc)
     else:
         raise AssertionError("duplicate OSM diff was accepted")
-    # Repeated flush must not change any decoded tile contents.
+    # Repeated empty flush must preserve both decoded content and every
+    # gzip tile byte. This matters for distributing incremental tile patches.
     once, _, _ = content_signature(inc_archive)
     replay = inc.flush_tiles(inc_archive)
     twice, _, _ = content_signature(inc_archive)
+    after_empty_flush, meta_after_empty_flush = exact_tile_bytes(inc_archive)
+    report["empty_flush_bytes_unchanged"] = (
+        after_empty_flush == updated_raw and
+        meta_after_empty_flush == updated_meta)
+    save()
     assert once == twice and replay["dirty_total"] == 0
+    assert report["empty_flush_bytes_unchanged"], "Empty flush changed tile bytes"
     save()
     # Independent full rebuild on fresh reference database.
     subprocess.run(["createdb", "refgis"], check=True)
@@ -217,10 +287,14 @@ def run(work: Path):
     finally:
         os.environ["PGDATABASE"] = old_pg
     report["parity"] = compare_strict(ref_archive, inc_archive)
+    report["byte_parity"] = compare_exact_tile_bytes(ref_archive, inc_archive)
     save()
     print("INCREMENTAL_E2E_RESULT", json.dumps(report, ensure_ascii=False), flush=True)
     assert report["parity"]["equal"], "Incremental MBTiles != independent full rebuild"
-    print("INCREMENTAL_FULL_REBUILD_PARITY_PASS", flush=True)
+    assert report["byte_parity"]["equal"], (
+        "Incremental gzip tile bytes != independent full rebuild: "
+        + str(report["byte_parity"]["first_differences_xyz"]))
+    print("INCREMENTAL_FULL_REBUILD_BYTE_PARITY_PASS", flush=True)
 
 
 def main():

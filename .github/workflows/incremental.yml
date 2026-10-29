@@ -66,12 +66,22 @@ jobs:
           j = json.loads(Path(sys.argv[1]).read_text())
           assert j["parity"]["equal"] and j["delta"]["dirty_covers_all_changes"]
           assert j["delta"]["actual_changed_tiles"] > 0
+          assert j["raw_delta"]["unchanged_outside_dirty"]
+          assert j["raw_delta"]["metadata_unchanged"]
+          assert j["empty_flush_bytes_unchanged"]
+          assert j["byte_parity"]["equal"]
           lines = [
               "# Incremental vs full rebuild", "",
               "Real osm2pgsql --slim create / --append with synthetic OSM XML/.osc.gz.",
               "",
-              "Parity: {}. Dirty coverage: {}.".format(
+              "Decoded parity: {}. Dirty coverage: {}.".format(
                   j["parity"]["equal"], j["delta"]["dirty_covers_all_changes"]),
+              "Exact gzip tile byte parity vs fresh build: {}. Differing tiles: {}.".format(
+                  j["byte_parity"]["equal"],
+                  j["byte_parity"]["different_tile_payload_bytes"]),
+              "Unexpired tile bytes and empty flush unchanged: {}, {}.".format(
+                  j["raw_delta"]["unchanged_outside_dirty"],
+                  j["empty_flush_bytes_unchanged"]),
               "Changed tiles: {}, expired: {}, uncovered: {}.".format(
                   j["delta"]["actual_changed_tiles"], j["delta"]["expired_tiles"],
                   len(j["delta"]["changed_not_expired"])),
@@ -83,7 +93,7 @@ jobs:
           Path(sys.argv[2]).write_text(chr(10).join(lines) + chr(10))
           PY
           cat "$WORK/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          echo INCREMENTAL_FULL_REBUILD_PARITY_VERIFIED
+          echo INCREMENTAL_FULL_REBUILD_BYTE_PARITY_VERIFIED
       - name: Preserve results even on failure
         if: always()
         shell: bash
