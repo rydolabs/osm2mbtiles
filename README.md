@@ -91,6 +91,23 @@ The recommended **primary** vector comparison is **Berlin, Germany**, using the 
 
 These comparisons concern **Vector MVT/PBF only**. PNG/Mapnik rendering is a separate workload and must not be described as faster or slower than Planetiler/Tilemaker from the vector timings.
 
+### Incremental maintenance: two OSM snapshots (Monaco smoke)
+
+The project prioritizes **retained PostGIS state and correct vector updates**, not
+a fastest-cold-converter claim. In [a single real Monaco PBF smoke run](https://github.com/rydolabs/osm2mbtiles/actions/runs/40973051076)
+(z12–16, one synthetic hospital POI change), **initial + append/flush took
+3.024 s** versus **11.137 s for two complete Planetiler v0.10.2 builds**.
+Both generated 5 changed tiles, and the updated PostGIS archive passed an
+independent full-rebuild *decoded feature parity* check.
+
+**Not a general speed ranking:** Monaco is tiny, Planetiler and PostGIS
+produce different feature profiles (final 32,783 vs 40,164 features), the
+PostGIS server setup is excluded, and it is one synthetic change/one run.
+The old Tokyo/Kanto cold PostGIS import+export alone exceeded two observed
+Planetiler builds. Read the [two-snapshot lifecycle benchmark protocol](docs/UPDATE-LIFECYCLE-BENCHMARK.md)
+before citing any speed comparison. Larger-region, repeated update benchmarks
+are still needed.
+
 ## Vector layers and updates
 
 Vector layers include `road`, `pathway`, `railway`, `building`, `building_part`, `poi`, `water`, `landcover`, `landuse`, `boundary`, and `boundary_legal`. The last two intentionally separate administrative relation lines from legal way boundaries. The `landcover` filter includes `natural=rock`; these refinements were validated with a [real Seoul tile in CI](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686).

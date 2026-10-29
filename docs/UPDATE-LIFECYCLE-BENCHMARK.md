@@ -20,6 +20,42 @@ POI 한 개를 추가하는 OSC. 실제 분당 OSM replication의 양·분포를
 재현한 시험이 아님. 빈 PostGIS 서버와 실행 환경이 준비된 뒤 측정하며
 패키지 설치/다운로드/PostgreSQL 클러스터 생성을 제외한다.
 
+## 최초 실측 결과: Monaco 단일 변경 스모크 (2026-10-30)
+
+[GitHub Actions 40973051076](https://github.com/rydolabs/osm2mbtiles/actions/runs/40973051076)
+에서 실제 Geofabrik Monaco PBF를 사용해 두 시점 모두 완료했고,
+PostGIS 최종 결과의 독립 전체 재import **디코딩 동등성 검증이 통과**했다.
+
+| 구간 | osm2mbtiles/PostGIS | Planetiler 0.10.2 |
+|---|---:|---:|
+| 최초 생성 | **2.149초** | 6.494초 |
+| 인공 .osc 갱신 / 두 번째 전체 생성 | **0.875초** (append 0.135 + flush 0.740) | 4.643초 |
+| **두 시점 누적** | **3.024초** | **11.137초** |
+
+이 Monaco 스모크에서는 PostGIS가 총 **8.113초 / 약 3.68배**
+짧았다. Planetiler의 갱신 PBF 준비 0.065초는 주 비교에서 **제외**했다.
+
+- 원본 Geofabrik PBF SHA256:
+  `67edcf8da5d0ae0d82c51055a7b2ec1b374faf55ebd51d45339bcebca708beac`
+- 한 개의 가상 hospital POI 추가. 양쪽 모두 비어 있지 않은 67개 타일,
+  변경된 gzip MVT 타일 **5개**.
+- PostGIS 최종 출력: 40,164개의 디코딩 피처(독립 재import 기준).
+  Planetiler 최종 출력: **32,783개**. 레이어/태그 프로필의 **작업량이 다르다**.
+- PostGIS 최초 생성부터 Planetiler보다 짧았으므로, 위 3.68배는
+  **증분 업데이트의 추가 이득만으로 발생한 속도 차이가 아니다**.
+- 1회 GitHub-hosted runner, 작은 입력, 인공 POI 1개, PostgreSQL 서버
+  초기 구성 제외, JVM 시작 비용이 큰 조건. Monaco는 **제품 속도
+  우위의 근거가 아닌 실행 가능성·정확성 스모크**다.
+
+**도쿄/간토 결과를 이렇게 표현하면 안 된다.** 이전 서로 다른 출력
+프로필의 단일 파일 시험에서 PostGIS 초기 단계 합산 **383.71초**
+(대량 Kanto import + Tokyo bbox 타일), Planetiler PBF→MBTiles
+**89.97초**였다. 같은 Planetiler 측정값을 두 번 단순 적용한
+**179.94초보다 PostGIS의 초기 생성이 이미 느렸으므로** 그 기록으로는
+"2회차부터 PostGIS가 더 빠르다"는 주장을 할 수 없다.
+동일 OSM 버전/프로필/하드웨어에서 증분 업데이트 시간과 여러 차례
+변경을 누적한 실측이 필요하다.
+
 ## 자동 실행
 
 GitHub Actions:

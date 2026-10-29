@@ -92,6 +92,30 @@ python3 -m osm2mbtiles.vector_incremental flush \
 
 생성·수정·삭제 변경의 만료 타일을 계산하고 MBTiles에 UPSERT/DELETE합니다. 실제 `.osc.gz`를 사용한 새로 생성한 MBTiles와의 정합성 검증이 [CI에서 통과](https://github.com/nssang00/chatgpt-write-test/actions/runs/40828739306)했습니다. **PNG 증분, OSM replication sequence 자동 다운로드/검증, 전국 규모 무중단 갱신은 지원하지 않습니다.** 중간 import 실패 후에는 동일 변경 파일을 무조건 재시도하면 안 됩니다. 변경된 Vector SQL을 사용하는 새 버전으로 업그레이드하면 증분 DB 전체 재생성이 필요할 수 있습니다.
 
+## PostGIS 증분 갱신 누적시간 비교 (Monaco 스모크)
+
+최초 PBF 생성 시간만 경쟁하는 대신, **초기 생성 + 변경분 반영**과
+Planetiler의 **초기 생성 + 업데이트된 PBF 전체 재생성**의 누적시간을
+비교한다. [실제 Monaco PBF 한 번의 실행](https://github.com/rydolabs/osm2mbtiles/actions/runs/40973051076)
+(z12–16, 인공 hospital POI 1개 추가)에서 다음을 측정했다.
+
+| 단계 | osm2mbtiles PostGIS | Planetiler 0.10.2 |
+|---|---:|---:|
+| 최초 전체 생성 | 2.149초 | 6.494초 |
+| 변경 반영 | 0.875초 | 4.643초 (전체 재생성) |
+| **두 시점 누적** | **3.024초** | **11.137초** |
+
+두 엔진 모두 5개 타일이 실제로 바뀌었다. PostGIS 증분 결과는
+**독립 DB의 전체 재생성과 디코딩된 피처·지오메트리·속성까지 일치**했다.
+
+**일반적 속도 우위를 증명하는 수치는 아니다.** Monaco 입력이 매우 작고,
+단 한 번의 인공 변경 실험이며 양쪽의 출력 피처 수도 다르다(최종
+PostGIS 40,164개, Planetiler 32,783개). 이전 도쿄/간토 측정에서는
+PostGIS 초기 생성만으로도 Planetiler 전체 생성 두 번보다 오래 걸렸다.
+이는 증분 유지의 가치를 보여주는 **작은 검증 예시**이지 도쿄/전국
+성능 순위가 아니다. 상세 프로토콜과 제한은
+[두 시점 갱신 벤치마크](docs/UPDATE-LIFECYCLE-BENCHMARK.md)를 참조한다.
+
 ## 성능 비교 — osm2mbtiles / Planetiler / Tilemaker
 
 동일한 실제 서울 OSM PBF와 동일한 **z/x/y**를 사용한 기존 Vector MVT 벤치마크 결과입니다. 세 엔진의 **레이어 프로필과 피처 수가 다르므로 작업량이 완전히 동일한 비교는 아닙니다.**
