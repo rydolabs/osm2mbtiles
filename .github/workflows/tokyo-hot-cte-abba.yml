@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  tokyo-hot-hot-parity:
+  tokyo-hot-parity:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
@@ -84,7 +84,7 @@ jobs:
               (w/(mode+"-job.json")).write_text(json.dumps(job))
           PY
           /usr/bin/python3 benchmarks/tokyo_hot_cte_compare.py snapshot "$WORK" before
-      - name: A-B-B-A: same DB and source, selectively inline hot CTE only
+      - name: 'A-B-B-A: same DB and source, selectively inline hot CTE only'
         shell: bash
         run: |
           set -euo pipefail
