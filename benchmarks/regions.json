@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "description": "Planned reproducible benchmark regions, not measured speed results",
+  "regions": [
+    {
+      "id": "monaco-smoke",
+      "country": "Monaco",
+      "role": "smoke",
+      "pbf_url": "https://download.geofabrik.de/europe/monaco-latest.osm.pbf",
+      "bbox": [
+        7.41,
+        43.72,
+        7.44,
+        43.75
+      ],
+      "minzoom": 12,
+      "maxzoom": 16,
+      "xyz_grid_cells": 87,
+      "measured": false
+    },
+    {
+      "id": "berlin-center",
+      "country": "Germany",
+      "role": "development",
+      "pbf_url": "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf",
+      "bbox": [
+        13.35,
+        52.49,
+        13.45,
+        52.54
+      ],
+      "minzoom": 12,
+      "maxzoom": 16,
+      "xyz_grid_cells": 432,
+      "measured": false
+    },
+    {
+      "id": "berlin-main",
+      "country": "Germany",
+      "role": "primary",
+      "pbf_url": "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf",
+      "bbox": [
+        13.2,
+        52.45,
+        13.6,
+        52.6
+      ],
+      "minzoom": 12,
+      "maxzoom": 16,
+      "xyz_grid_cells": 4573,
+      "measured": false
+    },
+    {
+      "id": "berlin-stress",
+      "country": "Germany",
+      "role": "stress",
+      "pbf_url": "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf",
+      "bbox": [
+        13.088,
+        52.338,
+        13.761,
+        52.676
+      ],
+      "minzoom": 12,
+      "maxzoom": 16,
+      "xyz_grid_cells": 16943,
+      "measured": false
+    }
+  ]
+}
