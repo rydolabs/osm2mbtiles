@@ -30,7 +30,8 @@ SQLITE_INSERT_BATCH = 256
 SQLITE_COMMIT_BATCH = 1024
 
 
-def batch_query(z: int, count: int, *, projected: bool = True) -> str:
+def batch_query(z: int, count: int, *, projected: bool = True,
+                inline_features: bool = False) -> str:
     """One SQL statement returns all XYZ tiles in a rectangular microbatch.
 
     Inputs: x,y pairs (2 * count bind parameters). CTE materialization is
@@ -59,8 +60,13 @@ def batch_query(z: int, count: int, *, projected: bool = True) -> str:
     for idx, (name, branches) in enumerate(grouped.items()):
         base = f"l{idx}"
         ctes.append(f"{base}_src AS MATERIALIZED (" + " UNION ALL ".join(branches) + ")")
+        # Experimental optimization: allow the planner to inline the *feature*
+        # CTE so the outer tile-coordinate predicate can push down. Retain the
+        # source MATERIALIZED CTE to avoid repeating the GiST region scan.
+        # Off by default until full binary MVT parity and speed are proven.
+        feature_hint = "NOT MATERIALIZED" if inline_features else "MATERIALIZED"
         ctes.append(
-            f"""{base}_feat AS MATERIALIZED (
+            f"""{base}_feat AS {feature_hint} (
                SELECT b.x, b.y,
                       ST_AsMVTGeom(s.geom, b.tile, {EXTENT}, {BUFFER}, true) AS geom,
                       s.properties
@@ -106,15 +112,19 @@ def _prepare_batch(cur, z: int, count: int) -> tuple[str, str]:
     Named statements live on the worker's PostgreSQL connection. Parameters
     stay bound at EXECUTE time; never interpolate tile coordinates into SQL.
     """
-    key = (z, count)
+    mode = os.environ.get("OSM2MBTILES_VECTOR_BATCH_FEATURE_CTE", "materialized")
+    if mode not in ("materialized", "inline"):
+        raise ValueError("Invalid OSM2MBTILES_VECTOR_BATCH_FEATURE_CTE: " + mode)
+    inline = mode == "inline"
+    key = (z, count, mode)
     cached = _queries.get(key)
     if cached is not None:
         return cached
-    sql = batch_query(z, count)
+    sql = batch_query(z, count, inline_features=True) if inline else batch_query(z, count)
     placeholders = iter(range(1, count * 2 + 1))
     prepared = re.sub(r"%s::integer",
                       lambda _: f"${next(placeholders)}::integer", sql)
-    name = f"mvt_z{z}_n{count}"
+    name = f"mvt_{'inline_' if inline else ''}z{z}_n{count}"
     cur.execute(
         f"PREPARE {name} ({', '.join(['integer'] * (count * 2))}) AS {prepared}")
     execute = f"EXECUTE {name} ({', '.join(['%s'] * (count * 2))})"
