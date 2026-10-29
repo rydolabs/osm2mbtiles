@@ -20,7 +20,7 @@ import time
 
 from osm2mbtiles import vector_incremental as incremental
 from osm2mbtiles.vector import export as full_export
-from postgis_batch_parity import compare_strict, content_signature, planetiler_stats
+# Heavy decoder/benchmark-only dependencies are imported inside main().
 
 SCOPE = {
     "monaco": {
@@ -205,6 +205,8 @@ def md_report(report: dict) -> str:
 
 
 def main(argv=None):
+    # Keep pure benchmark calculations testable without native MVT decoder.
+    from postgis_batch_parity import compare_strict, planetiler_stats
     p = argparse.ArgumentParser()
     p.add_argument("--region", choices=SCOPE, required=True)
     p.add_argument("--pbf", type=Path, required=True)
