@@ -24,9 +24,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      WORK: ${{ runner.temp }}/update-lifecycle
+      WORK: /tmp/osm2mbtiles-update-lifecycle
       REGION: ${{ inputs.region || 'monaco' }}
-      PGHOST: ${{ runner.temp }}/update-lifecycle/socket
+      PGHOST: /tmp/osm2mbtiles-update-lifecycle/socket
       PGPORT: '55497'
       PGUSER: lifecyclebench
       PGDATABASE: gis
