@@ -6,7 +6,6 @@ on:
     paths:
       - 'benchmarks/lifecycle_incremental_vs_planetiler.py'
       - 'benchmarks/lifecycle-planetiler.yml'
-      - 'docs/UPDATE-LIFECYCLE-BENCHMARK.md'
       - '.github/workflows/lifecycle-update-benchmark.yml'
   workflow_dispatch:
     inputs:
@@ -15,6 +14,11 @@ on:
         type: choice
         options: [monaco, berlin]
         default: monaco
+      expected_sha256:
+        description: 'Optional fixed PBF SHA256 for independent repeat runs'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -26,6 +30,7 @@ jobs:
     env:
       WORK: /tmp/osm2mbtiles-update-lifecycle
       REGION: ${{ inputs.region || 'monaco' }}
+      EXPECTED_SHA256: ${{ inputs.expected_sha256 || '' }}
       PGHOST: /tmp/osm2mbtiles-update-lifecycle/socket
       PGPORT: '55497'
       PGUSER: lifecyclebench
@@ -63,6 +68,9 @@ jobs:
             "$source_url" -o "$WORK/initial.osm.pbf"
           test "$(stat -c %s "$WORK/initial.osm.pbf")" -gt 100000
           sha256sum "$WORK/initial.osm.pbf" | tee "$WORK/initial-pbf.sha256"
+          if [[ -n "$EXPECTED_SHA256" ]]; then
+            printf '%s  %s\n' "$EXPECTED_SHA256" "$WORK/initial.osm.pbf" | sha256sum -c -
+          fi
           curl -fL --retry 3 --retry-delay 3 --max-time 300 \
             'https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar' \
             -o "$WORK/planetiler.jar"
