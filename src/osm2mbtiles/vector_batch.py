@@ -30,7 +30,8 @@ SQLITE_INSERT_BATCH = 256
 SQLITE_COMMIT_BATCH = 1024
 
 
-def batch_query(z: int, count: int, *, projected: bool = True) -> str:
+def batch_query(z: int, count: int, *, projected: bool = True,
+                cached: bool = False) -> str:
     """One SQL statement returns all XYZ tiles in a rectangular microbatch.
 
     Inputs: x,y pairs (2 * count bind parameters). CTE materialization is
@@ -51,8 +52,12 @@ def batch_query(z: int, count: int, *, projected: bool = True) -> str:
     ]
     grouped = {}
     for name, table, key, predicate in layer_specs(z):
-        props = _properties("t", z, name, key, projected=projected)
-        src = (f"SELECT t.geom, {props} AS properties FROM {table} t "
+        # Prepared attribute tables are built by vector_cache.prepare_cache.
+        # The experimental cached mode retains tag filters and MVT geometry.
+        props = _properties("t", z, name, key, cached=cached,
+                            projected=projected and not cached)
+        source = "fast_" + table if cached else table
+        src = (f"SELECT t.geom, {props} AS properties FROM {source} t "
                f"CROSS JOIN region r WHERE t.geom && r.geom AND ({predicate})")
         grouped.setdefault(name, []).append(src)
     parts = []
@@ -106,15 +111,19 @@ def _prepare_batch(cur, z: int, count: int) -> tuple[str, str]:
     Named statements live on the worker's PostgreSQL connection. Parameters
     stay bound at EXECUTE time; never interpolate tile coordinates into SQL.
     """
-    key = (z, count)
-    cached = _queries.get(key)
-    if cached is not None:
-        return cached
-    sql = batch_query(z, count)
+    # The CLI already builds fast_vector_* for --vector-query-mode cached,
+    # but Batch SQL previously ignored the flag. All other modes keep the
+    # original SQL exactly, including the current default.
+    use_cache = os.environ.get("OSM2MBTILES_VECTOR_QUERY_MODE") == "cached"
+    key = (z, count, use_cache)
+    statement = _queries.get(key)
+    if statement is not None:
+        return statement
+    sql = batch_query(z, count, cached=True) if use_cache else batch_query(z, count)
     placeholders = iter(range(1, count * 2 + 1))
     prepared = re.sub(r"%s::integer",
                       lambda _: f"${next(placeholders)}::integer", sql)
-    name = f"mvt_z{z}_n{count}"
+    name = f"mvt_{'cached_' if use_cache else ''}z{z}_n{count}"
     cur.execute(
         f"PREPARE {name} ({', '.join(['integer'] * (count * 2))}) AS {prepared}")
     execute = f"EXECUTE {name} ({', '.join(['%s'] * (count * 2))})"
