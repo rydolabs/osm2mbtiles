@@ -35,8 +35,26 @@ SCOPE = {
     },
 }
 ZOOMS = (12, 16)
-# Keep far outside the current public OSM node-ID range to prevent collisions.
-EXPERIMENT_NODE_ID = 9000000000001
+def choose_new_node_id(pbf: Path) -> int:
+    """Choose max existing node ID + 1 to avoid huge sparse-node-index allocations.
+
+    An enormous artificial ID (e.g. 9e12) can make direct tilers allocate
+    unreasonable sparse index memory. Stream OPL without keeping it in RAM.
+    This is input-fixture setup, not a timed engine operation.
+    """
+    proc = subprocess.Popen(
+        ["osmium", "cat", str(pbf), "-f", "opl"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    highest = 0
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if line.startswith(b"n"):
+            token = line.split(maxsplit=1)[0][1:]
+            if token.isdigit():
+                highest = max(highest, int(token))
+    if proc.wait() != 0 or highest == 0:
+        raise RuntimeError("Could not enumerate source OSM node IDs")
+    return highest + 1
 
 
 def sha256(path: Path) -> str:
@@ -47,13 +65,14 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def write_synthetic_diff(path: Path, *, lat: float, lon: float) -> None:
+def write_synthetic_diff(path: Path, *, lat: float, lon: float,
+                         node_id: int) -> None:
     """No existing real OSM objects are modified; this is NOT an OSM feed."""
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<osmChange version="0.6" generator="osm2mbtiles-lifecycle-ci">\n'
         ' <create>\n'
-        f'  <node id="{EXPERIMENT_NODE_ID}" version="1"'
+        f'  <node id="{node_id}" version="1"'
         f' lat="{lat}" lon="{lon}"'
         ' timestamp="2026-10-29T00:00:00Z" changeset="1">\n'
         '   <tag k="amenity" v="hospital"/>\n'
@@ -208,7 +227,9 @@ def main(argv=None):
     lo, hi = ZOOMS
     diff = work / "synthetic-change.osc.gz"
     updated = work / "after.osm.pbf"
-    write_synthetic_diff(diff, lat=params["lat"], lon=params["lon"])
+    synthetic_node_id = choose_new_node_id(input_pbf)
+    write_synthetic_diff(diff, lat=params["lat"], lon=params["lon"],
+                         node_id=synthetic_node_id)
     patch_seconds, _ = measure(lambda: run(
         ["osmium", "apply-changes", input_pbf, diff, "-o", updated],
         logfile=work / "osmium-apply.log"))
@@ -219,6 +240,7 @@ def main(argv=None):
         "role": params["role"],
         "bbox": bbox, "zoom": [lo, hi],
         "input_change": "single synthetic created hospital node, NOT a real replication diff",
+        "synthetic_created_node_id": synthetic_node_id,
         "versions": {"planetiler": "v0.10.2", "python": sys.version.split()[0]},
         "inputs": {
             "initial_pbf_sha256": sha256(input_pbf),
