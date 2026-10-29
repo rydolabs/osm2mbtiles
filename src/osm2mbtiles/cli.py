@@ -45,6 +45,10 @@ def arguments(argv=None):
                         help='postgis: original tile SQL (default); batch: experimental region SQL')
     export.add_argument('--vector-batch-side',type=int,default=2,
                         help='experimental batch tile block edge, 1..8 (default: 2)')
+    export.add_argument('--vector-spatial-shard-zoom',type=int,default=None,
+                        help='experimental locality scheduler (e.g. 11); batch tiler only')
+    export.add_argument('--vector-spatial-max-batches',type=int,default=32,
+                        help='max SQL microbatches per spatial shard, 1..256 (default: 32)')
     export.add_argument('--bbox',help='west,south,east,north (otherwise from PBF header)')
     export.add_argument('--runtime',type=Path,help='prepared native runtime folder')
     export.add_argument('--workdir',type=Path,help='persist intermediate database for subsequent runs')
@@ -122,6 +126,13 @@ def convert(args):
         raise PipelineError('--processes must be 1..64')
     if not 1 <= args.vector_batch_side <= 8:
         raise PipelineError('--vector-batch-side must be 1..8')
+    if args.vector_spatial_shard_zoom is not None:
+        if args.vector_tiler != 'batch':
+            raise PipelineError('--vector-spatial-shard-zoom requires --vector-tiler batch')
+        if not 0 <= args.vector_spatial_shard_zoom <= 22:
+            raise PipelineError('--vector-spatial-shard-zoom must be 0..22')
+    if not 1 <= args.vector_spatial_max_batches <= 256:
+        raise PipelineError('--vector-spatial-max-batches must be 1..256')
     bbox = validate_bbox(tuple(float(x) for x in args.bbox.split(','))) if args.bbox else read_bbox(pbf)
     count = tile_count(bbox,lo,hi)
     if count > args.max_tiles:
@@ -261,7 +272,9 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
             vector_job.write_text(json.dumps({
                 'pbf':str(pbf),'output':str(vector_out),'bbox':bbox,'minzoom':lo,
                 'maxzoom':hi,'processes':args.processes,
-                'tiler':args.vector_tiler,'batch_side':args.vector_batch_side},indent=2),encoding='utf-8')
+                'tiler':args.vector_tiler,'batch_side':args.vector_batch_side,
+                'spatial_shard_zoom':args.vector_spatial_shard_zoom,
+                'spatial_shard_max_batches':args.vector_spatial_max_batches},indent=2),encoding='utf-8')
             vector_env=db.env.copy()
             vector_env['OSM2MBTILES_VECTOR_QUERY_MODE'] = args.vector_query_mode
             run([runtime.python,vector_script,vector_job],env=vector_env)
