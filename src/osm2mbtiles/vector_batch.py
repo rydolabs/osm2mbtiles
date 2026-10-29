@@ -30,7 +30,8 @@ SQLITE_INSERT_BATCH = 256
 SQLITE_COMMIT_BATCH = 1024
 
 
-def batch_query(z: int, count: int, *, projected: bool = True) -> str:
+def batch_query(z: int, count: int, *, projected: bool = True,
+                inline_hot_features: bool = False) -> str:
     """One SQL statement returns all XYZ tiles in a rectangular microbatch.
 
     Inputs: x,y pairs (2 * count bind parameters). CTE materialization is
@@ -59,8 +60,13 @@ def batch_query(z: int, count: int, *, projected: bool = True) -> str:
     for idx, (name, branches) in enumerate(grouped.items()):
         base = f"l{idx}"
         ctes.append(f"{base}_src AS MATERIALIZED (" + " UNION ALL ".join(branches) + ")")
+        # Planner experiment based on EXPLAIN BUFFERS of Tokyo: road at z12
+        # and building at z14 were the largest spilled feature CTEs. Keep
+        # all other layers materialized, unlike the slower global-inline test.
+        hot_layer = (z == 12 and name == "road") or (z == 14 and name == "building")
+        feat_hint = "NOT MATERIALIZED" if (inline_hot_features and hot_layer) else "MATERIALIZED"
         ctes.append(
-            f"""{base}_feat AS MATERIALIZED (
+            f"""{base}_feat AS {feat_hint} (
                SELECT b.x, b.y,
                       ST_AsMVTGeom(s.geom, b.tile, {EXTENT}, {BUFFER}, true) AS geom,
                       s.properties
@@ -106,15 +112,19 @@ def _prepare_batch(cur, z: int, count: int) -> tuple[str, str]:
     Named statements live on the worker's PostgreSQL connection. Parameters
     stay bound at EXECUTE time; never interpolate tile coordinates into SQL.
     """
-    key = (z, count)
+    hot_mode = os.environ.get("OSM2MBTILES_VECTOR_BATCH_INLINE_HOT", "0")
+    if hot_mode not in ("0", "1"):
+        raise ValueError("Invalid Batch SQL inline-hot setting: " + hot_mode)
+    key = (z, count, hot_mode)
     cached = _queries.get(key)
     if cached is not None:
         return cached
-    sql = batch_query(z, count)
+    sql = (batch_query(z, count, inline_hot_features=True) if hot_mode == "1"
+           else batch_query(z, count))
     placeholders = iter(range(1, count * 2 + 1))
     prepared = re.sub(r"%s::integer",
                       lambda _: f"${next(placeholders)}::integer", sql)
-    name = f"mvt_z{z}_n{count}"
+    name = f"mvt_{'hot_' if hot_mode == '1' else ''}z{z}_n{count}"
     cur.execute(
         f"PREPARE {name} ({', '.join(['integer'] * (count * 2))}) AS {prepared}")
     execute = f"EXECUTE {name} ({', '.join(['%s'] * (count * 2))})"
