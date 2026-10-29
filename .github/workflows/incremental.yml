@@ -1,0 +1,102 @@
+name: osm2mbtiles Incremental OSM Diff Full-Rebuild Parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/incremental.yml'
+      - 'src/osm2mbtiles/vector_incremental.py'
+      - 'benchmarks/incremental_parity_e2e.py'
+      - 'tests/test_vector_incremental.py'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-append-vs-full-rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL/PostGIS, osm2pgsql and MVT decoder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip python3-pytest curl ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+          osm2pgsql --version
+          /usr/bin/python3 -c 'import psycopg2,pytest,mapbox_vector_tile;print("INCREMENTAL_PREREQUISITES_OK")'
+      - name: Structural + existing vector batch tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PROJECT="$GITHUB_WORKSPACE"
+          export PYTHONPATH="$PROJECT/src:$PROJECT/benchmarks"
+          /usr/bin/python3 -m compileall -q \
+            "$PROJECT/src/osm2mbtiles" "$PROJECT/benchmarks/incremental_parity_e2e.py"
+          /usr/bin/python3 -m pytest -q \
+            "$PROJECT/tests/test_vector_incremental.py" "$PROJECT/tests/test_vector_batch.py"
+      - name: Real OSM XML create, OSC append and independent full rebuild parity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PROJECT="$GITHUB_WORKSPACE"
+          export WORK="$RUNNER_TEMP/osm2mbtiles-incremental"
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$PROJECT/src:$PROJECT/benchmarks"
+          export PGHOST="$WORK/socket" PGPORT=55470 PGUSER=incrementalosm PGDATABASE=gis
+          mkdir -p "$PGHOST" "$GITHUB_WORKSPACE/incremental-evidence"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=64MB -c work_mem=4MB -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0" start
+          trap 'pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true' EXIT
+          createdb gis
+          /usr/bin/python3 "$PROJECT/benchmarks/incremental_parity_e2e.py" --work "$WORK"
+          test -s "$WORK/incremental-results.json"
+          /usr/bin/python3 - "$WORK/incremental-results.json" "$WORK/summary.md" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          j = json.loads(Path(sys.argv[1]).read_text())
+          assert j["parity"]["equal"] and j["delta"]["dirty_covers_all_changes"]
+          assert j["delta"]["actual_changed_tiles"] > 0
+          lines = [
+              "# Incremental vs full rebuild", "",
+              "Real osm2pgsql --slim create / --append with synthetic OSM XML/.osc.gz.",
+              "",
+              "Parity: {}. Dirty coverage: {}.".format(
+                  j["parity"]["equal"], j["delta"]["dirty_covers_all_changes"]),
+              "Changed tiles: {}, expired: {}, uncovered: {}.".format(
+                  j["delta"]["actual_changed_tiles"], j["delta"]["expired_tiles"],
+                  len(j["delta"]["changed_not_expired"])),
+              "Timings (seconds): init={}, append={}, flush={}, fresh full render={}.".format(
+                  j["init_sec"], j["append_sec"], j["flush_sec"], j["reference_render_sec"]),
+              "",
+              "Not tested: PNG incrementals, automated replication feed, nationwide data.",
+          ]
+          Path(sys.argv[2]).write_text(chr(10).join(lines) + chr(10))
+          PY
+          cat "$WORK/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          echo INCREMENTAL_FULL_REBUILD_PARITY_VERIFIED
+      - name: Preserve results even on failure
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p incremental-evidence
+          WORK="$RUNNER_TEMP/osm2mbtiles-incremental"
+          for name in incremental-results.json summary.md initial.osm final.osm change.osc.gz postgres.log; do
+            cp "$WORK/$name" incremental-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vector-incremental-parity-evidence
+          path: incremental-evidence/
+          retention-days: 14
+          if-no-files-found: warn
