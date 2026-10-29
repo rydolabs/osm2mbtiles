@@ -97,6 +97,15 @@ def _init_worker():
     import psycopg2
     _conn = psycopg2.connect(dbname=os.environ.get("PGDATABASE", "gis"))
     _conn.autocommit = True
+    # Session-only override for controlled profiling. The default Postgres
+    # work_mem and baseline SQL remain unchanged when unset.
+    requested_work_mem = os.environ.get("OSM2MBTILES_VECTOR_BATCH_WORK_MEM")
+    if requested_work_mem is not None:
+        if requested_work_mem not in ("8MB", "16MB", "32MB"):
+            raise ValueError("Unsupported vector Batch work_mem: " + requested_work_mem)
+        with _conn.cursor() as cur:
+            cur.execute("SELECT set_config('work_mem', %s, false)", (requested_work_mem,))
+        print(f"[BATCH WORKER] work_mem={requested_work_mem}", flush=True)
     _queries = {}
 
 
