@@ -152,13 +152,13 @@ def report(work):
             "Physical SQLite file SHA can vary with write order; every compressed tile and metadata field is tested instead."
         ],
     }
-    (work / "cte-parity.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    (work / "workmem-parity.json").write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     lines = [
-        "# Tokyo PostGIS feature work_mem A–B–B–A: exact parity",
+        "# Tokyo PostGIS per-worker work_mem A–B–B–A: exact parity",
         "",
         "- Single Kanto PBF source SHA256: " + data["source_sha256"],
         "- Same imported PostGIS DB, 4 workers, 2x2 batches, z12–16, bbox 139.55,35.55,139.95,35.85.",
-        "- A: materialized feature work_mem (original); B: NOT MATERIALIZED feature work_mem.",
+        "- A: same SQL, PostgreSQL default work_mem=8MB; B: same SQL, worker work_mem=16MB.",
         "",
         "| Run | work_mem | Vector seconds | PostgreSQL temp MiB | Shared blocks read |",
         "|---|---|---:|---:|---:|",
@@ -186,16 +186,16 @@ def report(work):
         "Actual stable performance improvements require independent replication.",
         ""
     ]
-    (work / "cte-parity.md").write_text("\n".join(lines))
-    print("TOKYO_work_mem_PARITY", "PASS" if valid else "FAIL", flush=True)
-    print("TOKYO_work_mem_TIMINGS", json.dumps({
+    (work / "workmem-parity.md").write_text("\n".join(lines))
+    print("TOKYO_WORKMEM_PARITY", "PASS" if valid else "FAIL", flush=True)
+    print("TOKYO_WORKMEM_TIMINGS", json.dumps({
         "old": a_times, "new": b_times, "median_delta_percent": data["delta_percent"],
         "baseline_temp_mib": data["baseline_median_temp_mib"],
         "mem16_temp_mib": data["mem16_median_temp_mib"],
         "mismatches": {k: v["mismatching_rows"] for k,v in comparisons.items()}
     }), flush=True)
     if not valid:
-        raise SystemExit("FAIL: output changed; do not merge experimental SQL optimization")
+        raise SystemExit("FAIL: output changed; do not merge experimental work_mem tuning")
 
 
 if __name__ == "__main__":
