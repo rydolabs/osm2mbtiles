@@ -12,6 +12,8 @@ import gzip
 import hashlib
 import json
 import os
+import sqlite3
+import sys
 from pathlib import Path
 import shutil
 import subprocess
@@ -121,6 +123,56 @@ def sql_scalar(statement):
             return cur.fetchone()[0]
 
 
+def exact_tile_bytes(path: Path):
+    """Full gzip-MVT row bytes, keyed by XYZ; tiny synthetic fixture only.
+
+    Compare SQLite *contents*, not entire file SHA: SQLite page/layout order
+    need not be identical for archives created by different write schedules.
+    """
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok", path
+        meta = dict(db.execute("SELECT name,value FROM metadata"))
+        tiles = {}
+        for z, x, tms_y, data in db.execute(
+                "SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles"):
+            xyz = (z, x, (1 << z) - 1 - tms_y)
+            assert xyz not in tiles, ("duplicate XYZ", xyz)
+            assert data[:2] == b"\x1f\x8b", ("gzip header missing", xyz)
+            tiles[xyz] = bytes(data)
+    return tiles, meta
+
+
+def compare_exact_tile_bytes(reference: Path, candidate: Path):
+    left, meta_left = exact_tile_bytes(reference)
+    right, meta_right = exact_tile_bytes(candidate)
+    # The name comes from the output filename and is legitimately different.
+    meta_left.pop("name", None)
+    meta_right.pop("name", None)
+    different = sorted(
+        xyz for xyz in left.keys() | right.keys()
+        if left.get(xyz) != right.get(xyz))
+    first_details = []
+    for xyz in different[:12]:
+        a, b = left.get(xyz), right.get(xyz)
+        first_details.append({
+            "xyz": xyz,
+            "reference_gzip_sha256": hashlib.sha256(a).hexdigest() if a else None,
+            "candidate_gzip_sha256": hashlib.sha256(b).hexdigest() if b else None,
+            "uncompressed_mvt_equal": (
+                gzip.decompress(a) == gzip.decompress(b)) if a and b else None,
+        })
+    return {
+        "equal": not different and meta_left == meta_right,
+        "metadata_equal_except_archive_name": meta_left == meta_right,
+        "reference_tiles": len(left), "candidate_tiles": len(right),
+        "different_tile_payload_bytes": len(different),
+        "first_differences_xyz": different[:20],
+        "first_difference_details": first_details,
+        "comparison": "every gzip-compressed tile_data BLOB and XYZ row; "
+                      "metadata exact except output archive name",
+    }
+
+
 def compare_delta(old, new, dirty):
     changed = {
         tile for tile in old.keys() | new.keys()
@@ -133,7 +185,37 @@ def compare_delta(old, new, dirty):
             "dirty_covers_all_changes": not missing_dirty}
 
 
-def run(work: Path):
+def batch_release_byte_regression(work: Path, baseline_src: Path, tag: str, pbf: Path):
+    """Generate raw/current Batch from the same imported DB, compare EVERY blob.
+
+    This is old-released-commit vs candidate parity; no new-to-new shortcut.
+    It does not make any changes to OSM tables or incremental state.
+    """
+    project_src = Path(inc.__file__).resolve().parents[1]
+    paths = {}
+    for version, root in (("main", baseline_src), ("candidate", project_src)):
+        dest = work / f"batch-{tag}-{version}.mbtiles"
+        job = work / f"batch-{tag}-{version}.json"
+        job.write_text(json.dumps({
+            "pbf": str(pbf), "output": str(dest),
+            "bbox": BBOX, "minzoom": LO, "maxzoom": HI,
+            "processes": 2, "tiler": "batch", "batch_side": 2
+        }))
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(root)
+        env["OSM2MBTILES_VECTOR_QUERY_MODE"] = "projected"
+        subprocess.run(
+            [sys.executable, "-m", "osm2mbtiles.vector_worker", str(job)],
+            check=True, env=env, timeout=180)
+        paths[version] = dest
+    result = compare_exact_tile_bytes(paths["main"], paths["candidate"])
+    print("BATCH_OLD_VS_NEW_BYTE_PARITY", tag, json.dumps(result), flush=True)
+    for path in paths.values():
+        path.unlink()
+    return result
+
+
+def run(work: Path, baseline_src: Path):
     work.mkdir(parents=True, exist_ok=True)
     initial, diff, final = fixtures(work)
     inc_archive = work / "updated.mbtiles"
@@ -155,7 +237,13 @@ def run(work: Path):
     inc.init(initial, inc_archive, BBOX, LO, HI, processes=2)
     report["init_sec"] = round(time.perf_counter() - started, 3)
     before, _, report["initial_stats"] = content_signature(inc_archive)
+    initial_raw, initial_meta = exact_tile_bytes(inc_archive)
+    report["same_database_release_regression"] = {}
+    report["same_database_release_regression"]["initial"] = (
+        batch_release_byte_regression(work, baseline_src, "initial", initial))
     save()
+    assert report["same_database_release_regression"]["initial"]["equal"], (
+        "Candidate Batch tiles differ from current main on identical initial PostGIS DB")
     started = time.perf_counter()
     inc.append(diff, inc_archive, flush=False)
     report["append_sec"] = round(time.perf_counter() - started, 3)
@@ -185,8 +273,35 @@ def run(work: Path):
     assert sql_scalar("SELECT count(*) FROM vector_expired_tiles") == 0
     assert sql_scalar("SELECT phase FROM osm2mbtiles_vector_sync") == "idle"
     report["delta"] = compare_delta(before, content_signature(inc_archive)[0], expired)
+    updated_raw, updated_meta = exact_tile_bytes(inc_archive)
+    # Even a semantically unchanged tile must retain its exact stored bytes
+    # unless osm2pgsql explicitly expired it. This prevents accidental
+    # rewrites of unrelated tiles or gzip header/feature-order churn.
+    outside_dirty = sorted(
+        xyz for xyz in initial_raw.keys() | updated_raw.keys()
+        if xyz not in expired and initial_raw.get(xyz) != updated_raw.get(xyz))
+    raw_changes = {
+        xyz for xyz in initial_raw.keys() | updated_raw.keys()
+        if initial_raw.get(xyz) != updated_raw.get(xyz)
+    }
+    report["raw_delta"] = {
+        "actual_changed_gzip_tiles": len(raw_changes),
+        "dirty_covers_all_byte_changes": raw_changes <= expired,
+        "unchanged_outside_dirty": len(outside_dirty) == 0,
+        "outside_dirty_first_differences": outside_dirty[:20],
+        "metadata_unchanged": initial_meta == updated_meta,
+    }
+    save()
     assert report["delta"]["dirty_covers_all_changes"], report["delta"]
     assert report["delta"]["actual_changed_tiles"] > 0
+    assert report["raw_delta"]["dirty_covers_all_byte_changes"], report["raw_delta"]
+    assert report["raw_delta"]["unchanged_outside_dirty"], report["raw_delta"]
+    assert report["raw_delta"]["metadata_unchanged"], report["raw_delta"]
+    report["same_database_release_regression"]["after_diff"] = (
+        batch_release_byte_regression(work, baseline_src, "after-diff", final))
+    save()
+    assert report["same_database_release_regression"]["after_diff"]["equal"], (
+        "Candidate Batch tiles differ from current main after OSM diff")
     # The same OSC must never be applied twice.
     try:
         inc.append(diff, inc_archive, flush=False)
@@ -194,11 +309,18 @@ def run(work: Path):
         assert "same diff twice" in str(exc)
     else:
         raise AssertionError("duplicate OSM diff was accepted")
-    # Repeated flush must not change any decoded tile contents.
+    # Repeated empty flush must preserve both decoded content and every
+    # gzip tile byte. This matters for distributing incremental tile patches.
     once, _, _ = content_signature(inc_archive)
     replay = inc.flush_tiles(inc_archive)
     twice, _, _ = content_signature(inc_archive)
+    after_empty_flush, meta_after_empty_flush = exact_tile_bytes(inc_archive)
+    report["empty_flush_bytes_unchanged"] = (
+        after_empty_flush == updated_raw and
+        meta_after_empty_flush == updated_meta)
+    save()
     assert once == twice and replay["dirty_total"] == 0
+    assert report["empty_flush_bytes_unchanged"], "Empty flush changed tile bytes"
     save()
     # Independent full rebuild on fresh reference database.
     subprocess.run(["createdb", "refgis"], check=True)
@@ -217,17 +339,28 @@ def run(work: Path):
     finally:
         os.environ["PGDATABASE"] = old_pg
     report["parity"] = compare_strict(ref_archive, inc_archive)
+    report["byte_parity"] = compare_exact_tile_bytes(ref_archive, inc_archive)
     save()
     print("INCREMENTAL_E2E_RESULT", json.dumps(report, ensure_ascii=False), flush=True)
     assert report["parity"]["equal"], "Incremental MBTiles != independent full rebuild"
-    print("INCREMENTAL_FULL_REBUILD_PARITY_PASS", flush=True)
+    # Independent DB imports can yield a different feature ordering even
+    # when decoded content is equal. This stricter result is recorded for
+    # investigation, but must NOT be used to justify changing stable MVT
+    # output ordering on an unrelated conservative regression PR.
+    if report["byte_parity"]["equal"]:
+        print("INCREMENTAL_FULL_REBUILD_BYTE_PARITY_PASS", flush=True)
+    else:
+        print("INCREMENTAL_INDEPENDENT_DB_BYTE_DIFFERENCES",
+              json.dumps(report["byte_parity"]), flush=True)
+    print("INCREMENTAL_SEMANTIC_AND_SAME_DB_RELEASE_BYTES_PASS", flush=True)
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--work", type=Path, required=True)
+    p.add_argument("--baseline-src", type=Path, required=True)
     args = p.parse_args()
-    run(args.work.resolve())
+    run(args.work.resolve(), args.baseline_src.resolve())
 
 
 if __name__ == "__main__":
