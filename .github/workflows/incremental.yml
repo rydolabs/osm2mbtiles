@@ -57,7 +57,14 @@ jobs:
             -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=64MB -c work_mem=4MB -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0" start
           trap 'pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true' EXIT
           createdb gis
-          /usr/bin/python3 "$PROJECT/benchmarks/incremental_parity_e2e.py" --work "$WORK"
+          # Pin the released main implementation; the current PR candidate
+          # must produce identical gzip MVT tile_data from the SAME PostGIS DB.
+          mkdir -p "$WORK/main-src"
+          git fetch --no-tags --depth=1 origin main
+          git archive FETCH_HEAD src | tar -x -C "$WORK/main-src"
+          git rev-parse FETCH_HEAD | tee "$WORK/main-commit.txt"
+          /usr/bin/python3 "$PROJECT/benchmarks/incremental_parity_e2e.py" \
+            --work "$WORK" --baseline-src "$WORK/main-src/src"
           test -s "$WORK/incremental-results.json"
           /usr/bin/python3 - "$WORK/incremental-results.json" "$WORK/summary.md" <<'PY'
           import json
@@ -69,14 +76,18 @@ jobs:
           assert j["raw_delta"]["unchanged_outside_dirty"]
           assert j["raw_delta"]["metadata_unchanged"]
           assert j["empty_flush_bytes_unchanged"]
-          assert j["byte_parity"]["equal"]
+          assert j["same_database_release_regression"]["initial"]["equal"]
+          assert j["same_database_release_regression"]["after_diff"]["equal"]
           lines = [
               "# Incremental vs full rebuild", "",
               "Real osm2pgsql --slim create / --append with synthetic OSM XML/.osc.gz.",
               "",
               "Decoded parity: {}. Dirty coverage: {}.".format(
                   j["parity"]["equal"], j["delta"]["dirty_covers_all_changes"]),
-              "Exact gzip tile byte parity vs fresh build: {}. Differing tiles: {}.".format(
+              "Same DB released-main vs candidate gzip byte parity (before/after diff): {}, {}.".format(
+                  j["same_database_release_regression"]["initial"]["equal"],
+                  j["same_database_release_regression"]["after_diff"]["equal"]),
+              "Independent DB incremental vs fresh build bytes (diagnostic): {}; differing tiles: {}.".format(
                   j["byte_parity"]["equal"],
                   j["byte_parity"]["different_tile_payload_bytes"]),
               "Unexpired tile bytes and empty flush unchanged: {}, {}.".format(
@@ -93,14 +104,14 @@ jobs:
           Path(sys.argv[2]).write_text(chr(10).join(lines) + chr(10))
           PY
           cat "$WORK/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          echo INCREMENTAL_FULL_REBUILD_BYTE_PARITY_VERIFIED
+          echo INCREMENTAL_SAME_DATABASE_RELEASE_BYTE_PARITY_VERIFIED
       - name: Preserve results even on failure
         if: always()
         shell: bash
         run: |
           mkdir -p incremental-evidence
           WORK="$RUNNER_TEMP/osm2mbtiles-incremental"
-          for name in incremental-results.json summary.md initial.osm final.osm change.osc.gz postgres.log; do
+          for name in incremental-results.json summary.md main-commit.txt initial.osm final.osm change.osc.gz postgres.log; do
             cp "$WORK/$name" incremental-evidence/ 2>/dev/null || true
           done
       - uses: actions/upload-artifact@v4
