@@ -1,0 +1,122 @@
+name: Seoul Real Vector Layer Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/osm2mbtiles/vector.py'
+      - 'vector/**'
+      - '.github/workflows/seoul-real-vector-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-real-seoul-pbf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native OSM to PostGIS and MVT decoder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip curl ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+      - name: Import authentic Seoul PBF and generate exactly one Vector MBTiles tile
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PROJECT="$GITHUB_WORKSPACE"
+          export WORK="$RUNNER_TEMP/seoul-layer-smoke"
+          export PYTHONPATH="$PROJECT/src"
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PGHOST="$WORK/socket" PGPORT=55484 PGUSER=layercheck PGDATABASE=gis
+          mkdir -p "$WORK" "$PGHOST"
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 240 \
+            https://tiles.osm.kr/download/seoul-non-military.osm.pbf \
+            -o "$WORK/seoul.osm.pbf"
+          sha256sum "$WORK/seoul.osm.pbf" > "$WORK/input.sha256"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=64MB -c work_mem=4MB" start
+          trap 'pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true' EXIT
+          createdb gis
+          psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION postgis; CREATE EXTENSION hstore;'
+          osm2pgsql --slim --drop --cache=256 --number-processes=4 -O flex \
+            -S "$PROJECT/vector/vector-flex.lua" -d gis "$WORK/seoul.osm.pbf" \
+            > "$WORK/import.log" 2>&1
+          psql -v ON_ERROR_STOP=1 -f "$PROJECT/vector/post-import.sql" >> "$WORK/import.log" 2>&1
+          /usr/bin/python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          w=Path(os.environ['WORK'])
+          job=dict(pbf=str(w/'seoul.osm.pbf'),output=str(w/'seoul.mbtiles'),
+                   bbox=[126.975,37.566,126.978,37.568],
+                   minzoom=14,maxzoom=14,processes=2,tiler='postgis',batch_side=2)
+          (w/'job.json').write_text(json.dumps(job))
+          PY
+          OSM2MBTILES_VECTOR_QUERY_MODE=projected \
+            /usr/bin/python3 "$PROJECT/src/osm2mbtiles/vector_worker.py" "$WORK/job.json"
+          /usr/bin/python3 - <<'PY'
+          import collections, gzip, json, os, sqlite3
+          from pathlib import Path
+          import mapbox_vector_tile
+          w=Path(os.environ['WORK'])
+          with sqlite3.connect(w/'seoul.mbtiles') as db:
+              assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+              assert db.execute('SELECT count(*) FROM tiles').fetchone()[0] == 1
+              row=db.execute(
+                  'SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
+                  (14,13970,(1<<14)-1-6344)).fetchone()
+              assert row is not None
+              data=row[0]
+              tile=mapbox_vector_tile.decode(gzip.decompress(data) if data[:2]==b'\x1f\x8b' else data)
+          def features(name):
+              return tile.get(name, {}).get('features', [])
+          def natural_hist(name):
+              return dict(collections.Counter(
+                  f['properties'].get('natural', '<missing>') for f in features(name)))
+          rock=[f for f in features('landcover') if f['properties'].get('natural')=='rock']
+          admin=features('boundary')
+          legal=features('boundary_legal')
+          water=features('water')
+          assert len(rock)>=50, ('rock landcover not imported',len(rock))
+          assert len(admin)>0, 'administrative relation boundaries missing'
+          assert len(legal)>0, 'legal Way boundaries missing'
+          assert all(f['properties'].get('boundary')=='legal' for f in legal)
+          assert all(f['geometry']['type'] in ('LineString','MultiLineString') for f in legal)
+          assert len(water)>0
+          assert all(f['properties'].get('natural', 'water')=='water' for f in water)
+          result={
+              'xyz':[14,13970,6344],
+              'water':len(water),'landcover':len(features('landcover')),
+              'landcover_rock':len(rock),
+              'administrative_boundary':len(admin),
+              'legal_boundary':len(legal),
+              'landcover_natural':natural_hist('landcover'),
+              'source_sha256':(w/'input.sha256').read_text().split()[0]
+          }
+          (w/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
+          print('REAL_SEOUL_NEW_LAYERS_PASS',json.dumps(result),flush=True)
+          PY
+      - name: Retain results and import log
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p seoul-layer-evidence
+          WORK="$RUNNER_TEMP/seoul-layer-smoke"
+          for file in input.sha256 result.json import.log postgres.log; do
+            cp "$WORK/$file" seoul-layer-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seoul-layer-smoke-evidence
+          path: seoul-layer-evidence/
+          retention-days: 14
+          if-no-files-found: warn
