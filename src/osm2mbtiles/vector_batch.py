@@ -30,7 +30,8 @@ SQLITE_INSERT_BATCH = 256
 SQLITE_COMMIT_BATCH = 1024
 
 
-def batch_query(z: int, count: int, *, projected: bool = True) -> str:
+def batch_query(z: int, count: int, *, projected: bool = True,
+                grouped_aggregation: bool = False) -> str:
     """One SQL statement returns all XYZ tiles in a rectangular microbatch.
 
     Inputs: x,y pairs (2 * count bind parameters). CTE materialization is
@@ -67,14 +68,32 @@ def batch_query(z: int, count: int, *, projected: bool = True) -> str:
                FROM {base}_src s JOIN b ON s.geom && b.search
             )"""
         )
-        # Only geom and properties enter ST_AsMVT, never batch x/y columns.
-        parts.append(
-            f"""COALESCE((
-               SELECT ST_AsMVT(q, '{name}', {EXTENT}, 'geom')
-               FROM (SELECT f.geom, f.properties FROM {base}_feat f
-                     WHERE f.x=b.x AND f.y=b.y AND f.geom IS NOT NULL) q
-            ), ''::bytea)"""
-        )
+        # A MATERIALIZED feature CTE normally gets scanned once PER output
+        # tile by a correlated MVT aggregate. In grouped mode aggregate ALL
+        # tiles in one pass instead. ROW(geom,properties) intentionally excludes
+        # x/y from MVT attributes; anonymous record columns are f1/f2.
+        if grouped_aggregation:
+            ctes.append(
+                f"""{base}_mvt AS MATERIALIZED (
+                  SELECT f.x, f.y,
+                     ST_AsMVT(ROW(f.geom, f.properties), '{name}', {EXTENT}, 'f1') AS pbf
+                  FROM {base}_feat f WHERE f.geom IS NOT NULL
+                  GROUP BY f.x, f.y
+                )"""
+            )
+            parts.append(
+                f"COALESCE((SELECT g.pbf FROM {base}_mvt g "
+                f"WHERE g.x=b.x AND g.y=b.y), ''::bytea)"
+            )
+        else:
+            # Only geom and properties enter ST_AsMVT, never batch x/y columns.
+            parts.append(
+                f"""COALESCE((
+                   SELECT ST_AsMVT(q, '{name}', {EXTENT}, 'geom')
+                   FROM (SELECT f.geom, f.properties FROM {base}_feat f
+                         WHERE f.x=b.x AND f.y=b.y AND f.geom IS NOT NULL) q
+                ), ''::bytea)"""
+            )
     payload = " || ".join(parts) if parts else "''::bytea"
     return "WITH " + ",\n".join(ctes) + f"\nSELECT b.x, b.y, {payload} AS pbf FROM b ORDER BY b.y,b.x"
 
@@ -106,15 +125,19 @@ def _prepare_batch(cur, z: int, count: int) -> tuple[str, str]:
     Named statements live on the worker's PostgreSQL connection. Parameters
     stay bound at EXECUTE time; never interpolate tile coordinates into SQL.
     """
-    key = (z, count)
+    grouped_mode = os.environ.get("OSM2MBTILES_VECTOR_BATCH_GROUPED_MVT", "0")
+    if grouped_mode not in ("0", "1"):
+        raise ValueError("Invalid Batch SQL grouped MVT setting: " + grouped_mode)
+    key = (z, count, grouped_mode)
     cached = _queries.get(key)
     if cached is not None:
         return cached
-    sql = batch_query(z, count)
+    sql = (batch_query(z, count, grouped_aggregation=True) if grouped_mode == "1"
+           else batch_query(z, count))
     placeholders = iter(range(1, count * 2 + 1))
     prepared = re.sub(r"%s::integer",
                       lambda _: f"${next(placeholders)}::integer", sql)
-    name = f"mvt_z{z}_n{count}"
+    name = f"mvt_{'grouped_' if grouped_mode == '1' else ''}z{z}_n{count}"
     cur.execute(
         f"PREPARE {name} ({', '.join(['integer'] * (count * 2))}) AS {prepared}")
     execute = f"EXECUTE {name} ({', '.join(['%s'] * (count * 2))})"
