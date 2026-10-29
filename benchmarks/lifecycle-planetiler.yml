@@ -1,0 +1,463 @@
+# TWO-SNAPSHOT LIFECYCLE BENCHMARK PROFILE; NOT SQL-OUTPUT-EQUIVALENT.
+# Corrects earlier Seoul natural=* water/landcover misclassification.
+# Native tag/geometry behavior may still differ across engines.
+schema_name: Tokyo Kanto OSM Detailed Benchmark
+schema_description: Planetiler custom profile approximating osm2mbtiles vector layers
+attribution: © OpenStreetMap contributors
+sources:
+  osm:
+    type: osm
+    local_path: snapshot.osm.pbf
+layers:
+  - id: road
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 6
+        include_when:
+          'highway': __any__
+        exclude_when:
+          'highway': [footway, cycleway, path, steps, pedestrian, bridleway]
+        attributes:
+          - key: class
+            tag_value: 'highway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'name:ko'
+            tag_value: 'name:ko'
+          - key: 'name:en'
+            tag_value: 'name:en'
+          - key: 'ref'
+            tag_value: 'ref'
+          - key: 'maxspeed'
+            tag_value: 'maxspeed'
+          - key: 'lanes'
+            tag_value: 'lanes'
+          - key: 'surface'
+            tag_value: 'surface'
+          - key: 'oneway'
+            tag_value: 'oneway'
+          - key: 'bridge'
+            tag_value: 'bridge'
+          - key: 'tunnel'
+            tag_value: 'tunnel'
+          - key: 'access'
+            tag_value: 'access'
+  - id: pathway
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 12
+        include_when:
+          'highway': [footway, cycleway, path, steps, pedestrian, bridleway]
+        attributes:
+          - key: class
+            tag_value: 'highway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'surface'
+            tag_value: 'surface'
+          - key: 'foot'
+            tag_value: 'foot'
+          - key: 'bicycle'
+            tag_value: 'bicycle'
+          - key: 'access'
+            tag_value: 'access'
+          - key: 'width'
+            tag_value: 'width'
+          - key: 'incline'
+            tag_value: 'incline'
+  - id: railway
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 8
+        include_when:
+          'railway': '%'
+        attributes:
+          - key: class
+            tag_value: 'railway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'ref'
+            tag_value: 'ref'
+          - key: 'service'
+            tag_value: 'service'
+          - key: 'bridge'
+            tag_value: 'bridge'
+          - key: 'tunnel'
+            tag_value: 'tunnel'
+          - key: 'electrified'
+            tag_value: 'electrified'
+  - id: building
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 13
+        include_when:
+          'building': '%'
+        attributes:
+          - key: class
+            tag_value: 'building'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'height'
+            tag_value: 'height'
+          - key: 'building:levels'
+            tag_value: 'building:levels'
+          - key: 'addr:housenumber'
+            tag_value: 'addr:housenumber'
+          - key: 'addr:street'
+            tag_value: 'addr:street'
+          - key: 'building'
+            tag_value: 'building'
+          - key: 'building:material'
+            tag_value: 'building:material'
+  - id: building_part
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 14
+        include_when:
+          'building:part': '%'
+        attributes:
+          - key: class
+            tag_value: 'building:part'
+          - key: 'height'
+            tag_value: 'height'
+          - key: 'min_height'
+            tag_value: 'min_height'
+          - key: 'building:levels'
+            tag_value: 'building:levels'
+          - key: 'building:part'
+            tag_value: 'building:part'
+  - id: landuse
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 9
+        include_when:
+          'landuse': '%'
+        attributes:
+          - key: class
+            tag_value: 'landuse'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'landuse'
+            tag_value: 'landuse'
+          - key: 'operator'
+            tag_value: 'operator'
+  - id: landcover
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 7
+        include_when:
+          'natural': [wood, scrub, grassland, heath, wetland, sand, bare_rock, rock, beach, glacier]
+        attributes:
+          - key: class
+            tag_value: 'natural'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'natural'
+            tag_value: 'natural'
+          - key: 'landcover'
+            tag_value: 'landcover'
+      - source: osm
+        geometry: polygon
+        min_zoom: 7
+        include_when:
+          'landcover': '%'
+        attributes:
+          - key: class
+            tag_value: 'landcover'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'natural'
+            tag_value: 'natural'
+          - key: 'landcover'
+            tag_value: 'landcover'
+  - id: leisure
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 10
+        include_when:
+          'leisure': '%'
+        attributes:
+          - key: class
+            tag_value: 'leisure'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'leisure'
+            tag_value: 'leisure'
+          - key: 'sport'
+            tag_value: 'sport'
+  - id: water
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 5
+        include_when:
+          'natural': [water]
+        attributes:
+          - key: class
+            tag_value: 'natural'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'natural'
+            tag_value: 'natural'
+          - key: 'water'
+            tag_value: 'water'
+          - key: 'intermittent'
+            tag_value: 'intermittent'
+      - source: osm
+        geometry: polygon
+        min_zoom: 5
+        include_when:
+          'water': '%'
+        attributes:
+          - key: class
+            tag_value: 'water'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'natural'
+            tag_value: 'natural'
+          - key: 'water'
+            tag_value: 'water'
+          - key: 'intermittent'
+            tag_value: 'intermittent'
+  - id: waterway
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 8
+        include_when:
+          'waterway': '%'
+        attributes:
+          - key: class
+            tag_value: 'waterway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'waterway'
+            tag_value: 'waterway'
+          - key: 'intermittent'
+            tag_value: 'intermittent'
+  - id: boundary
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 3
+        include_when:
+          'boundary': '%'
+        attributes:
+          - key: class
+            tag_value: 'boundary'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'name:ko'
+            tag_value: 'name:ko'
+          - key: 'admin_level'
+            tag_value: 'admin_level'
+          - key: 'boundary'
+            tag_value: 'boundary'
+  - id: place
+    features:
+      - source: osm
+        geometry: point
+        min_zoom: 5
+        include_when:
+          'place': '%'
+        attributes:
+          - key: class
+            tag_value: 'place'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'name:ko'
+            tag_value: 'name:ko'
+          - key: 'name:en'
+            tag_value: 'name:en'
+          - key: 'place'
+            tag_value: 'place'
+          - key: 'population'
+            tag_value: 'population'
+  - id: poi
+    features:
+      - source: osm
+        geometry: point
+        min_zoom:
+          default_value: 14
+          overrides:
+            12:
+              amenity: [hospital, university, school, townhall, police, fire_station]
+              tourism: [museum, attraction]
+        include_when:
+          amenity: __any__
+          shop: __any__
+          tourism: __any__
+          office: __any__
+          craft: __any__
+          historic: __any__
+          leisure: __any__
+        attributes:
+          - key: class
+            type: match_value
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'name:ko'
+            tag_value: 'name:ko'
+          - key: 'name:en'
+            tag_value: 'name:en'
+          - key: 'brand'
+            tag_value: 'brand'
+          - key: 'operator'
+            tag_value: 'operator'
+          - key: 'opening_hours'
+            tag_value: 'opening_hours'
+          - key: 'amenity'
+            tag_value: 'amenity'
+          - key: 'shop'
+            tag_value: 'shop'
+          - key: 'tourism'
+            tag_value: 'tourism'
+          - key: 'office'
+            tag_value: 'office'
+          - key: 'craft'
+            tag_value: 'craft'
+      - source: osm
+        geometry: polygon_point_on_surface
+        min_zoom:
+          default_value: 14
+          overrides:
+            12:
+              amenity: [hospital, university, school, townhall, police, fire_station]
+              tourism: [museum, attraction]
+        include_when:
+          amenity: __any__
+          shop: __any__
+          tourism: __any__
+          office: __any__
+          craft: __any__
+          historic: __any__
+          leisure: __any__
+        attributes:
+          - key: class
+            type: match_value
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'name:ko'
+            tag_value: 'name:ko'
+          - key: 'name:en'
+            tag_value: 'name:en'
+          - key: 'brand'
+            tag_value: 'brand'
+          - key: 'operator'
+            tag_value: 'operator'
+          - key: 'opening_hours'
+            tag_value: 'opening_hours'
+          - key: 'amenity'
+            tag_value: 'amenity'
+          - key: 'shop'
+            tag_value: 'shop'
+          - key: 'tourism'
+            tag_value: 'tourism'
+          - key: 'office'
+            tag_value: 'office'
+          - key: 'craft'
+            tag_value: 'craft'
+  - id: transport
+    features:
+      - source: osm
+        geometry: point
+        min_zoom: 11
+        include_when:
+          'public_transport': '%'
+        attributes:
+          - key: class
+            tag_value: 'public_transport'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'ref'
+            tag_value: 'ref'
+          - key: 'public_transport'
+            tag_value: 'public_transport'
+          - key: 'railway'
+            tag_value: 'railway'
+      - source: osm
+        geometry: point
+        min_zoom: 11
+        include_when:
+          'railway': '%'
+        attributes:
+          - key: class
+            tag_value: 'railway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'ref'
+            tag_value: 'ref'
+          - key: 'public_transport'
+            tag_value: 'public_transport'
+          - key: 'railway'
+            tag_value: 'railway'
+  - id: power
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 12
+        include_when:
+          'power': '%'
+        attributes:
+          - key: class
+            tag_value: 'power'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'power'
+            tag_value: 'power'
+          - key: 'voltage'
+            tag_value: 'voltage'
+  - id: aeroway
+    features:
+      - source: osm
+        geometry: line
+        min_zoom: 10
+        include_when:
+          'aeroway': '%'
+        attributes:
+          - key: class
+            tag_value: 'aeroway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'aeroway'
+            tag_value: 'aeroway'
+          - key: 'ref'
+            tag_value: 'ref'
+  - id: aeroway_area
+    features:
+      - source: osm
+        geometry: polygon
+        min_zoom: 11
+        include_when:
+          'aeroway': '%'
+        attributes:
+          - key: class
+            tag_value: 'aeroway'
+          - key: 'name'
+            tag_value: 'name'
+          - key: 'aeroway'
+            tag_value: 'aeroway'
+          - key: 'ref'
+            tag_value: 'ref'
+  - id: housenumber
+    features:
+      - source: osm
+        geometry: point
+        min_zoom: 15
+        include_when:
+          'addr:housenumber': '%'
+        attributes:
+          - key: class
+            tag_value: 'addr:housenumber'
+          - key: 'addr:housenumber'
+            tag_value: 'addr:housenumber'
+          - key: 'addr:street'
+            tag_value: 'addr:street'
