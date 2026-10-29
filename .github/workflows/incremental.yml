@@ -57,12 +57,15 @@ jobs:
             -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=64MB -c work_mem=4MB -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0" start
           trap 'pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true' EXIT
           createdb gis
-          # Pin the released main implementation; the current PR candidate
-          # must produce identical gzip MVT tile_data from the SAME PostGIS DB.
+          # Frozen pre-safety production MVT baseline (PR #5 already merged).
+          # Never fetch moving origin/main here: after this PR merges, a dynamic
+          # reference would compare the candidate against itself.
+          # Update the SHA ONLY through an explicit compatibility decision.
+          BASELINE_SHA=8968573f29508b0934d69bc3b0f955e9d11fa591
           mkdir -p "$WORK/main-src"
-          git fetch --no-tags --depth=1 origin main
-          git archive FETCH_HEAD src | tar -x -C "$WORK/main-src"
-          git rev-parse FETCH_HEAD | tee "$WORK/main-commit.txt"
+          git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
+          git archive "$BASELINE_SHA" src | tar -x -C "$WORK/main-src"
+          printf '%s\\n' "$BASELINE_SHA" > "$WORK/main-commit.txt"
           /usr/bin/python3 "$PROJECT/benchmarks/incremental_parity_e2e.py" \
             --work "$WORK" --baseline-src "$WORK/main-src/src"
           test -s "$WORK/incremental-results.json"
