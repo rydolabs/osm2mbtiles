@@ -1,0 +1,45 @@
+name: Grouped MVT Aggregate Real PostGIS Smoke
+
+on:
+  push:
+    branches: [perf/postgis-grouped-mvt]
+    paths:
+      - 'src/osm2mbtiles/vector_batch.py'
+      - 'tests/test_vector_batch_grouped.py'
+      - '.github/workflows/grouped-mvt-sql-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-sql-compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostGIS
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-16 postgresql-16-postgis-3 postgresql-client-16
+          sudo service postgresql start
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
+      - name: Verify identical gzip-free MVT on anonymous geom and JSONB record
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -u postgres psql -At -v ON_ERROR_STOP=1 <<'SQL' | tee /tmp/grouped-mvt-smoke.out
+          WITH f AS MATERIALIZED (
+              SELECT ST_SetSRID(ST_MakePoint(100,200),3857) AS geom,
+                     '{"class":"road","name":"A"}'::jsonb AS properties
+              UNION ALL
+              SELECT ST_SetSRID(ST_MakePoint(300,400),3857),
+                     '{"class":"road","name":"B","ref":"22"}'::jsonb
+          )
+          SELECT (SELECT ST_AsMVT(q, 'test', 4096, 'geom')
+                  FROM (SELECT geom,properties FROM f) q)
+              = (SELECT ST_AsMVT(ROW(f.geom,f.properties), 'test', 4096, 'f1')
+                  FROM f);
+          SQL
+          grep -Fxq t /tmp/grouped-mvt-smoke.out
+          echo GROUPED_RECORD_MVT_EXACT_BYTES_PASS
