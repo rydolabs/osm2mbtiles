@@ -1,0 +1,143 @@
+name: Tokyo Hot-Layer CTE A-B-B-A Exact Parity
+
+on:
+  push:
+    branches: [perf/postgis-hot-layer-cte]
+    paths:
+      - 'src/osm2mbtiles/vector_batch.py'
+      - 'tests/test_vector_batch_hot_cte.py'
+      - 'benchmarks/tokyo_hot_cte_compare.py'
+      - '.github/workflows/tokyo-hot-cte-abba.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tokyo-hot-hot-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      WORK: /tmp/tokyo-hot-cte-abba
+      PGHOST: /tmp/tokyo-hot-cte-abba/socket
+      PGPORT: '55488'
+      PGUSER: hotctebench
+      PGDATABASE: gis
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve exact main baseline source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK/main-src" "$WORK/socket"
+          git fetch --no-tags --depth=1 origin main
+          git archive FETCH_HEAD src | tar -x -C "$WORK/main-src"
+          git rev-parse FETCH_HEAD | tee "$WORK/baseline-commit.txt"
+          git rev-parse HEAD | tee "$WORK/candidate-commit.txt"
+          for mode in baseline1 hot1 hot2 baseline2; do
+            mkdir -p "$WORK/$mode"
+          done
+      - name: Install PostgreSQL 16 PostGIS, osm2pgsql, Python psycopg2
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql python3-psycopg2 curl ca-certificates time
+          df -h "$WORK"
+      - name: Download one Kanto PBF snapshot for all four exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          test "$(stat -c %s "$WORK/kanto.osm.pbf")" -gt 300000000
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/input.sha256"
+      - name: Build one PostGIS database and prepare all comparison jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          /usr/bin/time -f '%e %M' -o "$WORK/import.time" \
+            timeout 1800 bash -euo pipefail -c '
+              initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+              pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+                -o "-c listen_addresses=localhost -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB -c track_io_timing=on" start
+              createdb gis
+              psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+              osm2pgsql --slim --drop --cache=384 --number-processes=4 \
+                -O flex -S "$GITHUB_WORKSPACE/vector/vector-flex.lua" -d gis "$WORK/kanto.osm.pbf"
+              psql -v ON_ERROR_STOP=1 -f "$GITHUB_WORKSPACE/vector/post-import.sql"
+            ' > "$WORK/import.log" 2>&1
+          /usr/bin/python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          w = Path(os.environ["WORK"])
+          for mode in ("baseline1", "hot1", "hot2", "baseline2"):
+              job = dict(pbf=str(w/"kanto.osm.pbf"),
+                         output=str(w/mode/"tokyo.mbtiles"),
+                         bbox=[139.55,35.55,139.95,35.85],
+                         minzoom=12, maxzoom=16, processes=4,
+                         tiler="batch",batch_side=2)
+              (w/(mode+"-job.json")).write_text(json.dumps(job))
+          PY
+          /usr/bin/python3 benchmarks/tokyo_hot_cte_compare.py snapshot "$WORK" before
+      - name: A-B-B-A: same DB and source, selectively inline hot CTE only
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in baseline1 hot1 hot2 baseline2; do
+            if [[ "$mode" == baseline* ]]; then
+              module_root="$WORK/main-src/src"
+              hot_mode=0
+            else
+              module_root="$GITHUB_WORKSPACE/src"
+              hot_mode=1
+            fi
+            echo "=== $mode targeted hot CTE mode: $hot_mode ==="
+            /usr/bin/time -f '%e %M' -o "$WORK/$mode.time" \
+              timeout 1200 env PYTHONPATH="$module_root" \
+                OSM2MBTILES_VECTOR_QUERY_MODE=projected \
+                OSM2MBTILES_VECTOR_BATCH_INLINE_HOT="$hot_mode" \
+                /usr/bin/python3 "$module_root/osm2mbtiles/vector_worker.py" \
+                "$WORK/$mode-job.json" > "$WORK/$mode.log" 2>&1
+            tail -n 7 "$WORK/$mode.log"
+            /usr/bin/python3 benchmarks/tokyo_hot_cte_compare.py snapshot "$WORK" "$mode"
+            df -h "$WORK"
+          done
+      - name: Exact MBTiles row and gzip MVT byte-for-byte parity, and time/cache report
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 benchmarks/tokyo_hot_cte_compare.py report "$WORK"
+          cat "$WORK/hot-parity.md" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Profile road/building CTE samples after timed runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          env PYTHONPATH="$GITHUB_WORKSPACE/src" \
+            /usr/bin/python3 benchmarks/tokyo_hot_cte_compare.py profile "$WORK"
+          cat "$WORK/explain-samples.json"
+      - name: Collect logs, timings, block statistics, and exact-parity reports
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p tokyo-hot-cte-evidence
+          for f in input.sha256 baseline-commit.txt candidate-commit.txt \
+                   import.time import.log postgres.log \
+                   baseline1.log baseline1.time hot1.log hot1.time \
+                   hot2.log hot2.time baseline2.log baseline2.time \
+                   before-pgstat.json baseline1-pgstat.json hot1-pgstat.json \
+                   hot2-pgstat.json baseline2-pgstat.json \
+                   hot-parity.json hot-parity.md explain-samples.json; do
+            cp "$WORK/$f" tokyo-hot-cte-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tokyo-postgis-hot-cte-abba
+          path: tokyo-hot-cte-evidence/
+          retention-days: 14
+          if-no-files-found: warn
