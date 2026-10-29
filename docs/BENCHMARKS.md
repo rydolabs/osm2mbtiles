@@ -40,3 +40,16 @@ PostGIS 최초 import + 후처리는 **12.600s** (DB 자체 초기화 제외). `
 같은 서울 타일에서 `water` (osm2mbtiles 13 vs Planetiler 265), `landcover` (130 vs 252), `boundary` (15 vs 146)를 추가로 분석. 대부분은 다른 태그 필터 및 relation/way 분할 방식 때문이었고, 실제 개선 대상 `natural=rock`과 법적 경계 별도 표현은 **이번 이관에서 코드에 추가**. 따라서 **이전 실측 피처 수를 업데이트 후 출력 피처 수로 재사용하면 안 됨**. 적용 후 실증 비교는 별도로 필요.
 
 진단 소스 및 실증 결과: [GitHub Actions 40829971952](https://github.com/nssang00/chatgpt-write-test/actions/runs/40829971952).
+
+## 보완 레이어 실제 재생성 결과 (동일 서울시청 타일)
+
+이관 후 새로운 PostGIS Vector SQL로 z14/x13970/y6344를 실생성했습니다.
+
+| 레이어 | 이전 | 이관 후 | 검증 |
+|---|---:|---:|---|
+| water | 13 | 13 | 물 필터 유지 |
+| landcover | 130 | 235 | `natural=rock` **105개 추가** |
+| boundary | 15 | 15 | 행정 경계 유지 |
+| boundary_legal | 없음 | 80 | 법적 경계 별도 레이어 |
+
+[실제 서울 PBF + PostgreSQL/PostGIS CI](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686). 추가 레이어는 기존 Planetiler 비교 프로필과 동일한 출력 스키마를 의미하지 않습니다.

@@ -69,6 +69,8 @@ Vector 엔진: `--vector-tiler postgis|batch` (기본 postgis), Raster 인코딩
 
 도로(`road`), 보행로(`pathway`), 철도(`railway`), 건물(`building`, `building_part`), `poi`, 물(`water`), 지표면(`landcover`), `landuse`, 행정 경계(`boundary`) 등 상세 Vector 레이어를 생성합니다. 이번 이관에서 `natural=rock`을 `landcover`에 포함했으며, `boundary=legal`은 행정 경계와 구별되는 **`boundary_legal`** 레이어(z12+)로 추가했습니다.
 
+실제 서울시청 타일 **z14/x13970/y6344** 재생성 검증에서 `landcover`는 130→**235개**(`natural=rock` 105개 추가), 행정 경계는 **15개 유지**, 새 `boundary_legal`은 **80개**, `water`는 **13개 유지**였습니다. [새 저장소 실제 서울 PBF 검증 결과](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686)를 확인하세요.
+
 **레이어 이름과 피처 수는 지도 품질 점수가 아닙니다.** Planetiler/Tilemaker 비교는 서로 다른 분류 YAML/Lua 프로필을 사용했습니다. 실제 `water` / `boundary` 객체가 누락된 것인지 판단하려면 원본 태그와 지오메트리를 비교해야 합니다.
 
 ## .osc.gz 증분 업데이트 (Vector만, 실험용)
