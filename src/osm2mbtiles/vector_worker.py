@@ -20,7 +20,9 @@ def run_job(job):
     if tiler == "batch":
         from osm2mbtiles.vector_batch import export_batch
         return export_batch(pbf, out, bbox, lo, hi, processes,
-                            side=int(job.get("batch_side", 2)))
+                            side=int(job.get("batch_side", 2)),
+                            spatial_shard_zoom=job.get("spatial_shard_zoom"),
+                            spatial_shard_max_batches=int(job.get("spatial_shard_max_batches", 32)))
     if tiler == "postgis":
         return export(pbf, out, bbox, lo, hi, processes)
     raise ValueError("Unknown vector tiler: " + str(tiler))
