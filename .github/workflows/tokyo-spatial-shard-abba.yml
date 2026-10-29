@@ -1,0 +1,149 @@
+name: Tokyo Z11 Spatial Shard Exact-Parity ABBA
+
+on:
+  push:
+    branches: [perf/spatial-shard-scheduler-z11]
+    paths:
+      - '.github/workflows/tokyo-spatial-shard-abba.yml'
+      - 'src/osm2mbtiles/vector_batch.py'
+      - 'src/osm2mbtiles/vector_worker.py'
+      - 'src/osm2mbtiles/cli.py'
+      - 'benchmarks/tokyo_spatial_compare.py'
+      - 'tests/test_vector_spatial.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tokyo-spatial-abba:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      WORK: /tmp/tokyo-spatial-abba
+      PGHOST: /tmp/tokyo-spatial-abba/socket
+      PGPORT: '55485'
+      PGUSER: spatialbench
+      PGDATABASE: gis
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve exact main baseline source; prepare four output paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK/main-src" "$WORK/socket"
+          git fetch --no-tags --depth=1 origin main
+          git archive FETCH_HEAD src | tar -x -C "$WORK/main-src"
+          git rev-parse FETCH_HEAD | tee "$WORK/base-commit.txt"
+          git rev-parse HEAD | tee "$WORK/spatial-commit.txt"
+          for name in baseline1 spatial1 spatial2 baseline2; do mkdir -p "$WORK/$name"; done
+      - name: Install PostgreSQL PostGIS, osm2pgsql and analysis dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql python3-psycopg2 curl ca-certificates time
+          df -h "$WORK"
+          free -h
+      - name: Download same Kanto PBF snapshot ONCE, save SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          test "$(stat -c %s "$WORK/kanto.osm.pbf")" -gt 300000000
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/input.sha256"
+      - name: Import one common full Kanto database and take initial counters
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          /usr/bin/time -f '%e %M' -o "$WORK/import.time" \
+            timeout 1800 bash -euo pipefail -c '
+              initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+              pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+                -o "-c listen_addresses=localhost -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB -c track_io_timing=on" start
+              createdb gis
+              psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+              osm2pgsql --slim --drop --cache=384 --number-processes=4 \
+                -O flex -S "$GITHUB_WORKSPACE/vector/vector-flex.lua" -d gis "$WORK/kanto.osm.pbf"
+              psql -v ON_ERROR_STOP=1 -f "$GITHUB_WORKSPACE/vector/post-import.sql"
+            ' > "$WORK/import.log" 2>&1
+          /usr/bin/python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          w = Path(os.environ["WORK"])
+          for name in ("baseline1", "spatial1", "spatial2", "baseline2"):
+              job = dict(
+                  pbf=str(w/"kanto.osm.pbf"),
+                  output=str(w/name/"tokyo.mbtiles"),
+                  bbox=[139.55,35.55,139.95,35.85],
+                  minzoom=12, maxzoom=16, processes=4,
+                  tiler="batch", batch_side=2,
+              )
+              if name.startswith("spatial"):
+                  job.update(spatial_shard_zoom=11, spatial_shard_max_batches=32)
+              (w/(name+"-job.json")).write_text(json.dumps(job))
+          PY
+          /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/tokyo_spatial_compare.py" snapshot "$WORK" before
+          df -h "$WORK"
+      - name: A-B-B-A compare original scanline and opt-in Z11 scheduler on SAME DB
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in baseline1 spatial1 spatial2 baseline2; do
+            if [[ "$mode" == baseline* ]]; then
+              module_root="$WORK/main-src/src"
+              worker="$module_root/osm2mbtiles/vector_worker.py"
+            else
+              module_root="$GITHUB_WORKSPACE/src"
+              worker="$module_root/osm2mbtiles/vector_worker.py"
+            fi
+            echo "=== START $mode ==="
+            /usr/bin/time -f '%e %M' -o "$WORK/$mode.time" \
+              timeout 1800 env PYTHONPATH="$module_root" \
+              OSM2MBTILES_VECTOR_QUERY_MODE=projected \
+              /usr/bin/python3 "$worker" \
+              "$WORK/$mode-job.json" > "$WORK/$mode.log" 2>&1
+            tail -n 7 "$WORK/$mode.log"
+            /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/tokyo_spatial_compare.py" snapshot "$WORK" "$mode"
+            df -h "$WORK"
+          done
+      - name: Check EVERY zipped MVT tile payload and every metadata field
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/tokyo_spatial_compare.py" compare "$WORK"
+          cat "$WORK/spatial-parity.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$WORK/spatial-parity.md"
+      - name: Representative EXPLAIN ANALYZE BUFFERS after all timed runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE/src" /usr/bin/python3 \
+            "$GITHUB_WORKSPACE/benchmarks/tokyo_spatial_compare.py" explain "$WORK"
+          cat "$WORK/representative-explain.json"
+      - name: Preserve reports and logs even if parity fails (no PBF/MBTiles upload)
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p tokyo-spatial-evidence
+          for file in input.sha256 base-commit.txt spatial-commit.txt \
+                      import.log import.time postgres.log \
+                      baseline1.log baseline1.time spatial1.log spatial1.time \
+                      spatial2.log spatial2.time baseline2.log baseline2.time \
+                      before-pgstat.json baseline1-pgstat.json spatial1-pgstat.json \
+                      spatial2-pgstat.json baseline2-pgstat.json \
+                      spatial-parity.md spatial-parity.json representative-explain.json; do
+            cp "$WORK/$file" tokyo-spatial-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tokyo-z11-spatial-abba-byte-parity
+          path: tokyo-spatial-evidence/
+          retention-days: 14
+          if-no-files-found: warn
