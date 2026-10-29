@@ -1,0 +1,130 @@
+name: Tokyo Vector Batch Writer Before After
+
+on:
+  push:
+    branches: [perf/vector-batch-writer-1024]
+    paths:
+      - 'src/osm2mbtiles/vector_batch.py'
+      - 'tests/test_vector_batch_writer.py'
+      - 'benchmarks/tokyo_writer_parity.py'
+      - '.github/workflows/tokyo-writer-before-after.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tokyo-before-after:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      WORK: /tmp/tokyo-writer-parity
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve baseline source from current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK/main-src" "$WORK/baseline" "$WORK/optimized"
+          git fetch --no-tags --depth=1 origin main
+          git archive FETCH_HEAD src | tar -x -C "$WORK/main-src"
+          git rev-parse FETCH_HEAD | tee "$WORK/base-commit.txt"
+          git rev-parse HEAD | tee "$WORK/optimized-commit.txt"
+      - name: Install identical PostGIS environment for both runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql python3-psycopg2 curl time
+          df -h "$WORK"
+      - name: Download Kanto snapshot once, record hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          test "$(stat -c %s "$WORK/kanto.osm.pbf")" -gt 300000000
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/input.sha256"
+      - name: One PostGIS import for both 4-worker Batch SQL renders
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PGHOST="$WORK/socket" PGPORT=55484 PGUSER=tokyowriter PGDATABASE=gis
+          mkdir -p "$PGHOST"
+          /usr/bin/time -f '%e %M' -o "$WORK/import.time" \
+            timeout 1800 bash -euo pipefail -c '
+              initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+              pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+                -o "-c listen_addresses=localhost -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB" start
+              createdb gis
+              psql -v ON_ERROR_STOP=1 -c "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+              osm2pgsql --slim --drop --cache=384 --number-processes=4 \
+                -O flex -S "$GITHUB_WORKSPACE/vector/vector-flex.lua" -d gis "$WORK/kanto.osm.pbf"
+              psql -v ON_ERROR_STOP=1 -f "$GITHUB_WORKSPACE/vector/post-import.sql"
+            ' > "$WORK/import.log" 2>&1
+          /usr/bin/python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          w = Path(os.environ["WORK"])
+          for version in ("baseline", "optimized"):
+              job = dict(
+                  pbf=str(w / "kanto.osm.pbf"),
+                  output=str(w / version / "tokyo.mbtiles"),
+                  bbox=[139.55, 35.55, 139.95, 35.85],
+                  minzoom=12, maxzoom=16, processes=4,
+                  tiler="batch", batch_side=2,
+              )
+              (w / (version + "-job.json")).write_text(json.dumps(job))
+          PY
+          df -h "$WORK"
+      - name: BEFORE - original main Batch SQL and 128-tile commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PGHOST="$WORK/socket" PGPORT=55484 PGUSER=tokyowriter PGDATABASE=gis
+          /usr/bin/time -f '%e %M' -o "$WORK/baseline.time" \
+            timeout 1800 env PYTHONPATH="$WORK/main-src/src" \
+            OSM2MBTILES_VECTOR_QUERY_MODE=projected \
+            /usr/bin/python3 "$WORK/main-src/src/osm2mbtiles/vector_worker.py" \
+            "$WORK/baseline-job.json" > "$WORK/baseline.log" 2>&1
+          tail -n 8 "$WORK/baseline.log"
+      - name: AFTER - tuned SQL PREPARE, worker gzip, grouped INSERT, 1024-tile commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PGHOST="$WORK/socket" PGPORT=55484 PGUSER=tokyowriter PGDATABASE=gis
+          /usr/bin/time -f '%e %M' -o "$WORK/optimized.time" \
+            timeout 1800 env PYTHONPATH="$GITHUB_WORKSPACE/src" \
+            OSM2MBTILES_VECTOR_QUERY_MODE=projected \
+            /usr/bin/python3 "$GITHUB_WORKSPACE/src/osm2mbtiles/vector_worker.py" \
+            "$WORK/optimized-job.json" > "$WORK/optimized.log" 2>&1
+          tail -n 8 "$WORK/optimized.log"
+      - name: Compare every SQLite tile payload, metadata, and measured times
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/tokyo_writer_parity.py" "$WORK"
+          cat "$WORK/parity.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$WORK/parity.md"
+      - name: Save evidence whether parity passes or fails
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p tokyo-writer-evidence
+          for f in input.sha256 base-commit.txt optimized-commit.txt \
+                   import.log baseline.log optimized.log postgres.log \
+                   import.time baseline.time optimized.time \
+                   parity.md parity.json; do
+            cp "$WORK/$f" tokyo-writer-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tokyo-writer-before-after-logs
+          path: tokyo-writer-evidence/
+          retention-days: 14
+          if-no-files-found: warn
