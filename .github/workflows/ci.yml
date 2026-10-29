@@ -31,7 +31,10 @@ jobs:
       - name: Verify source-only checkout structure
         run: |
           test -f run.bat
-          test -f test-seoul.bat
+          ! test -f test-seoul.bat
+          test -f tests/test-seoul.bat
+          test -f tests/test_seoul.ps1
+          test -f benchmarks/regions.json
           test -f vector/vector-flex.lua
           test -f src/osm2mbtiles/vector_incremental.py
           ! find . -type f \( -name '*.mbtiles' -o -name '*.osm.pbf' \) | grep .
@@ -45,7 +48,8 @@ jobs:
         shell: powershell
         run: |
           $bad = @()
-          Get-ChildItem -Path tools -Filter *.ps1 | ForEach-Object {
+          @(Get-ChildItem -Path tools -Filter *.ps1) +
+          @(Get-ChildItem -Path tests -Filter *.ps1) | ForEach-Object {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
               $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
