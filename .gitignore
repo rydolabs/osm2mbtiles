@@ -1,0 +1,16 @@
+# Never commit downloaded OSM data, tiles, caches or local runtimes.
+test-output/
+runtime/
+work/
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.osm.pbf
+*.osc.gz
+*.mbtiles
+*.mbtiles.partial
+*.mbtiles-wal
+*.mbtiles-shm
+*.log

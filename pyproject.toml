@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osm2mbtiles-local"
+version = "0.1.0"
+description = "Docker-free OSM MBTiles exporter: Mapnik PNG raster and MVT/PBF vector"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+osm2mbtiles = "osm2mbtiles.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "Pillow>=10"]

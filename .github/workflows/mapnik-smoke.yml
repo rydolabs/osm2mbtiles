@@ -1,0 +1,108 @@
+name: osm2mbtiles Python Mapnik Raster Runtime Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/osm2mbtiles/worker.py'
+      - 'tests/test_worker_mapnik_fonts.py'
+      - '.github/workflows/mapnik-smoke.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-python-mapnik-render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actual Ubuntu Python Mapnik and TTF fonts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3-mapnik python3-pytest fonts-dejavu-core
+          /usr/bin/python3 - <<'PY'
+          import mapnik
+          print('ACTUAL_MAPNIK_LOADED', mapnik.mapnik_version_string(), flush=True)
+          PY
+      - name: Regression unit tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PROJECT="$GITHUB_WORKSPACE"
+          export PYTHONPATH="$PROJECT/src"
+          /usr/bin/python3 -m pytest -q "$PROJECT/tests/test_worker_mapnik_fonts.py"
+      - name: Render actual PNG MBTiles using native Python Mapnik
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PROJECT="$GITHUB_WORKSPACE"
+          export PROJECT
+          WORK="$RUNNER_TEMP/mapnik-png-smoke"
+          export WORK
+          mkdir -p "$WORK"
+          /usr/bin/python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          w = Path(os.environ['WORK'])
+          # Empty Web Mercator XML style deliberately avoids PostGIS and
+          # network access; this tests real Mapnik, fonts and PNG tile writing.
+          (w / 'style.xml').write_text(
+              '<Map srs="+proj=merc +a=6378137 +b=6378137 +lat_ts=0 '
+              '+lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m '
+              '+nadgrids=@null +wktext +no_defs" background-color="#ffffff">'
+              '</Map>\n', encoding='utf-8')
+          job = {
+              'runtime': str(w),
+              'fonts': '/usr/share/fonts/truetype/dejavu',
+              'partial': str(w / 'test-raster.mbtiles'),
+              'mapfile': str(w / 'style.xml'),
+              'bbox': [126.95, 37.47, 127.13, 37.62],
+              'minzoom': 12, 'maxzoom': 12,
+              'metatile': 1, 'buffer': 128, 'encoding': 'png',
+              'name': 'real-mapnik-raster-smoke', 'job_key': 'raster-font-api-v1'
+          }
+          (w / 'job.json').write_text(json.dumps(job, indent=2))
+          PY
+          /usr/bin/python3 "$PROJECT/src/osm2mbtiles/worker.py" "$WORK/job.json" \
+            | tee "$WORK/worker.log"
+          /usr/bin/python3 - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+          w=Path(os.environ['WORK'])
+          out=w/'test-raster.mbtiles'
+          with sqlite3.connect(out) as db:
+              assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+              meta=dict(db.execute('SELECT name,value FROM metadata'))
+              assert meta['format']=='png'
+              rows=db.execute('SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles').fetchall()
+              assert rows
+              assert all(row[3].startswith(bytes.fromhex('89504e470d0a1a0a')) for row in rows)
+              print('REAL_MAPNIK_PNG_MBTILES_PASS', {
+                  'tiles':len(rows), 'file_bytes':out.stat().st_size,
+                  'font_path':'/usr/share/fonts/truetype/dejavu'
+              },flush=True)
+          PY
+      - name: Retain raster runtime smoke logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p raster-smoke-evidence
+          WORK="$RUNNER_TEMP/mapnik-png-smoke"
+          for file in worker.log job.json style.xml; do
+            cp "$WORK/$file" raster-smoke-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: osm2mbtiles-real-mapnik-raster-fonts-evidence
+          path: raster-smoke-evidence/
+          retention-days: 14
+          if-no-files-found: warn
