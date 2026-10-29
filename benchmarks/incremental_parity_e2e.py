@@ -136,7 +136,7 @@ def exact_tile_bytes(path: Path):
                 "SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles"):
             xyz = (z, x, (1 << z) - 1 - tms_y)
             assert xyz not in tiles, ("duplicate XYZ", xyz)
-            assert data[:2] == b"\\x1f\\x8b", ("gzip header missing", xyz)
+            assert data[:2] == b"\x1f\x8b", ("gzip header missing", xyz)
             tiles[xyz] = bytes(data)
     return tiles, meta
 
