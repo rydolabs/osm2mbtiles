@@ -1,4 +1,4 @@
-name: Tokyo Kanto z12-16 Vector Three Engine Pilot
+name: Tokyo Kanto z12-16 Three Engine (Tilemaker 3.2) Pilot
 
 on:
   push:
@@ -32,14 +32,30 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
-            postgresql-16-postgis-3-scripts osm2pgsql tilemaker \
-            python3-psycopg2 python3-pip curl ca-certificates time
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip curl ca-certificates time \
+            git cmake build-essential libboost-dev libboost-filesystem-dev \
+            libboost-program-options-dev libboost-system-dev \
+            lua5.3 liblua5.3-dev libshp-dev libsqlite3-dev rapidjson-dev
           /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
           mkdir -p "$WORK"
           df -h "$WORK"
           free -h
-          tilemaker --version || true
           osm2pgsql --version
+      - name: Build pinned Tilemaker v3.2.0 from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v3.2.0 \
+            https://github.com/systemed/tilemaker.git "$WORK/tilemaker-src"
+          git -C "$WORK/tilemaker-src" rev-parse HEAD | tee "$WORK/tilemaker-src-commit.txt"
+          /usr/bin/time -f '%e %M' -o "$WORK/tilemaker-build.time" \
+            timeout 1000 bash -euo pipefail -c '
+              cmake -S "$WORK/tilemaker-src" -B "$WORK/tilemaker-build" -DCMAKE_BUILD_TYPE=Release
+              cmake --build "$WORK/tilemaker-build" --parallel 2
+            ' > "$WORK/tilemaker-build.log" 2>&1
+          "$WORK/tilemaker-build/tilemaker" --version
+          df -h "$WORK"
       - name: Download ONE source snapshot and pin three comparison profiles
         shell: bash
         run: |
@@ -55,7 +71,7 @@ jobs:
             -o "$WORK/planetiler.jar"
           for name in config-openmaptiles.json process-openmaptiles.lua; do
             curl -fL --retry 3 --connect-timeout 20 \
-              "https://raw.githubusercontent.com/systemed/tilemaker/v2.4.0/resources/$name" \
+              "https://raw.githubusercontent.com/systemed/tilemaker/v3.2.0/resources/$name" \
               -o "$WORK/$name"
           done
           /usr/bin/python3 - <<'PY'
@@ -65,7 +81,13 @@ jobs:
           profile = json.loads((w / "config-openmaptiles.json").read_text())
           removed = [k for k, v in profile["layers"].items() if v.get("source")]
           profile["layers"] = {k:v for k,v in profile["layers"].items() if k not in removed}
-          profile["settings"].update(minzoom=12, maxzoom=16, basezoom=14)
+          # Fix invalid 2.4 pilot: basezoom must be >= maxzoom.
+          profile["settings"].update(minzoom=12, maxzoom=16, basezoom=16)
+          # OMT native cap is z14; extend layer caps for real z16 work.
+          for layer in profile["layers"].values():
+              if "maxzoom" in layer:
+                  layer["maxzoom"] = max(16, layer["maxzoom"])
+          assert profile["settings"]["basezoom"] >= profile["settings"]["maxzoom"]
           (w / "config-openmaptiles-local.json").write_text(json.dumps(profile))
           print("TILEMAKER_EXTERNAL_SHAPEFILE_LAYERS_EXCLUDED", removed, flush=True)
           PY
@@ -125,14 +147,14 @@ jobs:
           tail -n 16 "$WORK/planetiler.log"
           rm -rf "$WORK/planetiler-tmp" "$WORK/planetiler-work"
           df -h "$WORK"
-      - name: Tilemaker v2.4 OMT-like profile, same source and tile rectangle
+      - name: Tilemaker v3.2 OMT-like profile extended to z16, same source and tile rectangle
         shell: bash
         run: |
           set -euo pipefail
           (
             cd "$WORK"
             /usr/bin/time -f '%e %M' -o "$WORK/tilemaker.time" \
-              timeout 1800 tilemaker \
+              timeout 1800 "$WORK/tilemaker-build/tilemaker" \
               --input "$WORK/kanto.osm.pbf" --output "$WORK/tilemaker.mbtiles" \
               --config "$WORK/config-openmaptiles-local.json" \
               --process "$WORK/process-openmaptiles.lua" \
@@ -153,7 +175,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p tokyo-pilot-evidence
-          for f in input.sha256 tokyo-benchmark.json tokyo-benchmark.md \
+          for f in input.sha256 tilemaker-src-commit.txt tilemaker-build.log \
+                   tokyo-benchmark.json tokyo-benchmark.md \
                    postgis-import.log osm2mbtiles.log planetiler.log tilemaker.log postgres.log; do
             cp "$WORK/$f" tokyo-pilot-evidence/ 2>/dev/null || true
           done
