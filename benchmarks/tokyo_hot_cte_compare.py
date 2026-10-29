@@ -37,7 +37,7 @@ def profile(work):
                 _, cells = next(microbatches((139.55,35.55,139.95,35.85),z,z,2))
                 params = [item for xy in cells for item in xy]
                 for mode in ("materialized", "targeted-hot"):
-                    q = batch_query(z, len(cells), hot_hot_features=mode=="targeted-hot")
+                    q = batch_query(z, len(cells), inline_hot_features=mode=="targeted-hot")
                     cur.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + q, params)
                     plan = cur.fetchone()[0][0]
                     rows[f"{z}-{mode}"] = {
