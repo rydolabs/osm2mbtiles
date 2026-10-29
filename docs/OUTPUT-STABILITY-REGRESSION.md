@@ -40,8 +40,10 @@
   free-lists and transactions need not match while stored tile data does.
 - For changes to the MVT SQL generator, run an A/B against the prior
   released commit and compare every tile blob (and metadata) for **the same
-  frozen OSM input and the same imported database**. The workflow fetches
-  `main` explicitly and records its commit hash. A new-to-new semantic
+  frozen OSM input and the same imported database**. The workflow fetches the frozen production baseline
+  `8968573f29508b0934d69bc3b0f955e9d11fa591` explicitly and records
+  that commit hash. It must not fetch the *moving* `main` branch, which would
+  turn the test into a self-comparison after merge. A new-to-new semantic
   parity test alone is not sufficient to establish old-vs-new byte stability.
 - The small synthetic incremental suite is an essential CI gate but does not
   establish correctness for nationwide OSM relations or production
