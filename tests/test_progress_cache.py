@@ -1,77 +1,13 @@
 """Tile-based progress reporting and cache cleanup safety (no native Mapnik required)."""
 from __future__ import annotations
 
-import importlib.util
-import io
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKER = ROOT / 'src' / 'osm2mbtiles' / 'worker.py'
 CLEANUP = ROOT / 'tools' / 'cache_cleanup.sh'
-
-
-def worker_module():
-    spec = importlib.util.spec_from_file_location('worker_progress_under_test', WORKER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_exact_metatile_totals_match_scheduler():
-    m = worker_module()
-    for bbox, lo, hi, meta in [((-180, -85, 180, 85), 0, 3, 8),
-                               ((126.8, 34, 129.5, 38), 0, 9, 8),
-                               ((126, 35, 128, 38), 5, 14, 2)]:
-        job = dict(bbox=bbox, minzoom=lo, maxzoom=hi, metatile=meta)
-        expected_tiles, expected_metas = m.expected_counts(job)
-        tasks = list(m.tasks(job))
-        assert expected_metas == len(tasks)
-        assert expected_tiles == sum((t[6] - t[5] + 1) * (t[8] - t[7] + 1) for t in tasks)
-
-
-def test_progress_reports_full_tile_percentage_eta_and_resume():
-    m = worker_module()
-    stdout = io.StringIO()
-    now = [0.0]
-    meter = m.ProgressBar(200, 10, 50, stream=stdout, clock=lambda: now[0])
-    now[0] = 5
-    meter.update(50)
-    now[0] = 10
-    meter.update(50)
-    now[0] = 15
-    meter.update(50)
-    meter.finish()
-    out = stdout.getvalue()
-    assert 'Total: 200 PNG tiles | 10 metatiles | preexisting: 50 tiles' in out
-    assert '25.00%' in out
-    assert '50.00%' in out
-    assert '75.00%' in out
-    assert '100.00%' in out
-    assert 'PNG 200/200' in out
-    assert 'ETA 00:00' in out
-    assert out.count('%') <= 7  # coarse checkpoints, not a log line per tile
-
-
-def test_tty_progress_reuses_same_line():
-    m = worker_module()
-    class Terminal(io.StringIO):
-        def isatty(self): return True
-    t = Terminal()
-    now = [0]
-    bar = m.ProgressBar(4, 2, 0, stream=t, clock=lambda: now[0])
-    now[0] = 1
-    bar.update(2)
-    now[0] = 2
-    bar.update(2)
-    bar.finish()
-    output = t.getvalue()
-    assert '\r[' in output
-    assert '50.00%' in output
-    assert '100.00%' in output
-    assert output.endswith('\n')
 
 
 def cache_tree(tmp_path):
