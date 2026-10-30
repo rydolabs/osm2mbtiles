@@ -1,0 +1,113 @@
+name: Frozen main Kanto PostGIS OSC incremental update timing
+
+on:
+  push:
+    branches: [bench/kanto-incremental-append-times-20261030]
+    paths:
+      - '.github/workflows/kanto-incremental-timing.yml'
+      - 'benchmarks/kanto_incremental_timing.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kanto-real-pbf-three-diffs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    env:
+      WORK: /tmp/kanto-incremental-timing
+      PGHOST: /tmp/kanto-incremental-timing/socket
+      PGPORT: "55491"
+      PGUSER: kanto-inc-bench
+      PGDATABASE: gis
+      MAIN_SOURCE_SHA: "4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin exact current main output/import/update production code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$MAIN_SOURCE_SHA"
+          git diff --exit-code "$MAIN_SOURCE_SHA" HEAD -- src/ vector/
+          echo "$MAIN_SOURCE_SHA" | tee /tmp/current-main-sha.txt
+      - name: Install Postgres, PostGIS, osm2pgsql, osmium and MVT decoder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql osmium-tool \
+            python3-psycopg2 python3-pip curl ca-certificates time
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+          osm2pgsql --version
+          osmium --version
+          mkdir -p "$WORK" "$PGHOST"
+          df -h "$WORK"
+      - name: Download the exact previous Kanto source PBF snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          test "$(stat -c %s "$WORK/kanto.osm.pbf")" -gt 300000000
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/source.sha256"
+          printf '%s  %s\n' \
+            '1af62f945ecb25a1c52db30967d7d2db1c6aaea5a17f1dbb1d53dbe55691040e' \
+            "$WORK/kanto.osm.pbf" | sha256sum --check
+          df -h "$WORK"
+      - name: Start disposable empty PostgreSQL server (not timed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0" start
+          createdb gis
+          psql -X -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION postgis; CREATE EXTENSION hstore;'
+          df -h "$WORK"
+      - name: Measure persistent initial import then three independent synthetic OSC applies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/kanto_incremental_timing.py" \
+            --work "$WORK" --pbf "$WORK/kanto.osm.pbf" \
+            > "$WORK/kanto-incremental-run.log" 2>&1 || {
+              tail -n 140 "$WORK/kanto-incremental-run.log"
+              df -h "$WORK"
+              exit 1
+            }
+          cat "$WORK/kanto-incremental-results.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h "$WORK"
+      - name: Stop disposable PostgreSQL instance
+        if: always()
+        shell: bash
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Preserve timings, report, checksum and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kanto-incremental-evidence
+          for file in source.sha256 kanto-incremental-results.json \
+            kanto-incremental-results.md kanto-incremental-run.log postgres.log; do
+            cp "$WORK/$file" kanto-incremental-evidence/ 2>/dev/null || true
+          done
+          cp /tmp/current-main-sha.txt kanto-incremental-evidence/ 2>/dev/null || true
+          echo "Neither original PBF, PostgreSQL DB nor MBTiles included in artifacts"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kanto-frozen-main-incremental-time-evidence
+          path: kanto-incremental-evidence/
+          retention-days: 14
+          if-no-files-found: warn
