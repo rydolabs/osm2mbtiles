@@ -1,0 +1,141 @@
+name: Frozen main Kanto PostGIS Batch vs Planetiler v0.10.2
+
+on:
+  push:
+    branches: [bench/main-kanto-vs-planetiler-20261030]
+    paths:
+      - '.github/workflows/kanto-current-main-vs-planetiler.yml'
+      - 'benchmarks/kanto_main_compare.py'
+      - 'benchmarks/kanto-planetiler.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kanto-tokyo-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      WORK: /tmp/kanto-current-main
+      PGHOST: /tmp/kanto-current-main/socket
+      PGPORT: "55493"
+      PGUSER: kantomain
+      PGDATABASE: gis
+      MAIN_SOURCE_SHA: "4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Ensure exact main source code; only benchmark files added
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$MAIN_SOURCE_SHA"
+          git diff --exit-code "$MAIN_SOURCE_SHA" HEAD -- src/ vector/
+          git rev-parse HEAD | tee /tmp/benchmark-revision.txt
+          echo "MAIN_SOURCE_PIN=$MAIN_SOURCE_SHA"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+      - name: Install real PostGIS, osm2pgsql and Vector PBF decoder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip curl time ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+          osm2pgsql --version
+          /usr/bin/python3 -c 'import psycopg2,mapbox_vector_tile; print("DEPENDENCIES_OK")'
+          mkdir -p "$WORK" "$PGHOST"
+          df -h "$WORK"
+      - name: Download exact same Kanto snapshot and pinned Planetiler v0.10.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          test "$(stat -c %s "$WORK/kanto.osm.pbf")" -gt 300000000
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/source.sha256"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 300 \
+            https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar \
+            -o "$WORK/planetiler.jar"
+          sha256sum "$WORK/planetiler.jar" | tee "$WORK/planetiler.sha256"
+          sha256sum benchmarks/kanto-planetiler.yml | tee "$WORK/profile.sha256"
+          java -version
+          df -h "$WORK"
+      - name: One timed full Kanto PostGIS initial setup, osm2pgsql and derived SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          /usr/bin/time -f '%e %M' -o "$WORK/postgis-import.time" \
+            timeout 1800 bash -euo pipefail -c '
+              initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+              pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+                -o "-c listen_addresses=localhost -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB" start
+              createdb gis
+              psql -X -v ON_ERROR_STOP=1 -c "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+              osm2pgsql --slim --drop --cache=384 --number-processes=4 \
+                -O flex -S "$GITHUB_WORKSPACE/vector/vector-flex.lua" -d gis "$WORK/kanto.osm.pbf"
+              psql -X -v ON_ERROR_STOP=1 -f "$GITHUB_WORKSPACE/vector/post-import.sql"
+            ' > "$WORK/postgis-import.log" 2>&1 || {
+              tail -n 70 "$WORK/postgis-import.log"
+              exit 1
+            }
+          tail -n 15 "$WORK/postgis-import.log"
+          df -h "$WORK"
+      - name: Alternate 3 warm main Batch exports vs 3 full Planetiler builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          export OSM2MBTILES_VECTOR_QUERY_MODE=projected
+          /usr/bin/python3 "$GITHUB_WORKSPACE/benchmarks/kanto_main_compare.py" \
+            --work "$WORK" --pbf "$WORK/kanto.osm.pbf" \
+            --jar "$WORK/planetiler.jar" \
+            --profile "$GITHUB_WORKSPACE/benchmarks/kanto-planetiler.yml" \
+            --source-sha "$MAIN_SOURCE_SHA" --runs 3 \
+            > "$WORK/benchmark-run.log" 2>&1 || {
+              tail -n 110 "$WORK/benchmark-run.log"
+              exit 1
+            }
+          cat "$WORK/kanto-current-main-results.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h "$WORK"
+      - name: Cleanup disposable database
+        if: always()
+        shell: bash
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Collect compact evidence even if a run fails
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kanto-main-evidence
+          for f in source.sha256 planetiler.sha256 profile.sha256 \
+                   kanto-current-main-results.json kanto-current-main-results.md \
+                   benchmark-run.log postgis-import.time postgis-import.log postgres.log; do
+            cp "$WORK/$f" kanto-main-evidence/ 2>/dev/null || true
+          done
+          cp "$WORK"/*.time kanto-main-evidence/ 2>/dev/null || true
+          for f in "$WORK"/batch-r*.log "$WORK"/planetiler-r*.log; do
+            test ! -f "$f" || cp "$f" kanto-main-evidence/
+          done
+          cp /tmp/benchmark-revision.txt kanto-main-evidence/ 2>/dev/null || true
+          echo "PBFs, Planetiler JAR, full DB and MBTiles are not uploaded."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: main-kanto-vs-planetiler-evidence
+          path: kanto-main-evidence/
+          retention-days: 14
+          if-no-files-found: warn
