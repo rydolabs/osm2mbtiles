@@ -21,7 +21,7 @@ import time
 from osm2mbtiles import vector_incremental as inc
 from osm2mbtiles.tiles import xyz_range
 
-BBOX = (139.55, 35.55, 139.95, 35.85)
+BBOX = (139.745, 35.675, 139.77, 35.70)
 ZLO, ZHI = 12, 16
 PBF_SHA = "1af62f945ecb25a1c52db30967d7d2db1c6aaea5a17f1dbb1d53dbe55691040e"
 MAIN_SHA = "4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a"
@@ -141,7 +141,7 @@ def main():
         "source_sha": MAIN_SHA, "pbf_sha256": input_hash,
         "bbox": BBOX, "zoom": [ZLO, ZHI],
         "workflow": "main vector_incremental init, append (--no-flush), flush",
-        "snapshot": "full Geofabrik Kanto PBF, central Tokyo tiles only",
+        "snapshot": "full Geofabrik Kanto PBF in persistent DB; small central Tokyo tile window only",
         "changes": "three SEPARATE synthetic hospital node creates near Tokyo; NOT a real replication feed",
         "synthetic_ids": [node_id + i for i in range(3)],
         "samples": [],
@@ -205,7 +205,7 @@ def main():
         "",
         "Full Kanto source SHA256: " + input_hash,
         "Main source SHA: " + MAIN_SHA,
-        "Output: central Tokyo bbox 139.55,35.55,139.95,35.85, z12-16",
+        "Output: localized central Tokyo bbox 139.745,35.675,139.77,35.70, z12-16",
         "",
         f"Initial persistent DB init + original non-Batch full export: **{init_sec:.3f}s**",
         "",
