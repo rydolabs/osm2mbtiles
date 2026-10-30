@@ -186,6 +186,10 @@ def produce_report_md(r):
         "",
         f"- Legacy vs Batch, same DB, initial: **{r['initial_parity']}**",
         f"- Legacy after OSC+flush vs Batch, same DB: **{r.get('updated_parity')}**",
+        f"- Semantic equality (layer, feature, geometry, attrs, multiplicity), initial/updated: "
+        f"**{r.get('initial_semantic', {}).get('equal')} / {r.get('updated_semantic', {}).get('equal')}**",
+        f"- Safe to replace legacy initialization with Batch as-is: "
+        f"**{r.get('safe_to_switch_initial_to_batch')}**",
         "",
         "## One deterministic synthetic hospital OSC (NOT replication feed)",
         "",
@@ -225,6 +229,7 @@ def produce_report_md(r):
 def main():
     from osm2mbtiles import vector_incremental as inc
     from osm2mbtiles import vector_batch as batch
+    from postgis_batch_parity import compare_strict
     from osm2mbtiles.tiles import xyz_range
     p = argparse.ArgumentParser()
     p.add_argument("--region", choices=REGIONS, required=True)
@@ -275,6 +280,7 @@ def main():
     t, _ = timed(lambda: batch.export_batch(pbf, batch_initial, bbox, *ZOOM, 4, side=2))
     report["batch_initial_s"] = t
     report["initial_parity"] = byte_compare(legacy, batch_initial)
+    report["initial_semantic"] = compare_strict(legacy, batch_initial)
     save()
     print("PERSISTENT_INITIAL_PARITY", json.dumps(report["initial_parity"]), flush=True)
 
@@ -319,7 +325,7 @@ def main():
     report["dirty_covers_changed"] = changed <= dirty and bool(changed)
     empty = inc.flush_tiles(legacy)
     report["empty_flush_ok"] = (empty["dirty_total"] == 0 and
-                                byte_compare(legacy, legacy)["byte_equal"])
+                                dict(rows(legacy)) == after)
     try:
         inc.append(osc, legacy, flush=False)
     except RuntimeError as exc:
@@ -329,24 +335,40 @@ def main():
     t, _ = timed(lambda: batch.export_batch(pbf, batch_updated, bbox, *ZOOM, 4, side=2))
     report["batch_updated_s"] = t
     report["updated_parity"] = byte_compare(legacy, batch_updated)
-    pass_checks = (
-        report["initial_parity"]["byte_equal"]
-        and report["updated_parity"]["byte_equal"]
-        and report["dirty_covers_changed"]
+    report["updated_semantic"] = compare_strict(legacy, batch_updated)
+    report["semantically_equal"] = (
+        report["initial_semantic"]["equal"] and report["updated_semantic"]["equal"]
+    )
+    report["incremental_invariants_pass"] = (
+        report["dirty_covers_changed"]
         and report["unchanged_outside_dirty"]
         and report["poi_visible"]
         and report["empty_flush_ok"]
         and report["duplicate_rejected"]
     )
-    report["status"] = "PASS" if pass_checks else "PARITY_OR_UPDATE_FAIL"
+    report["safe_to_switch_initial_to_batch"] = (
+        report["initial_parity"]["byte_equal"]
+        and report["updated_parity"]["byte_equal"]
+        and report["semantically_equal"]
+        and report["incremental_invariants_pass"]
+    )
+    experiment_valid = report["semantically_equal"] and report["incremental_invariants_pass"]
+    report["status"] = (
+        "PASS" if report["safe_to_switch_initial_to_batch"]
+        else "BYTE_PARITY_BLOCKED" if experiment_valid
+        else "SEMANTIC_OR_INCREMENTAL_FAIL"
+    )
     save()
     (work / "persistent-batch-results.md").write_text(produce_report_md(report))
     print("PERSISTENT_BATCH_AUDIT_RESULT", json.dumps(
         {"region": a.region, "status": report["status"],
-         "legacy_s": t, "initial_parity": report["initial_parity"],
-         "updated_parity": report["updated_parity"]}), flush=True)
-    if not pass_checks:
-        raise RuntimeError("Persistent Batch parity or OSC update invariant failed")
+         "initial_parity": report["initial_parity"],
+         "updated_parity": report["updated_parity"],
+         "initial_semantic_equal": report["initial_semantic"]["equal"],
+         "updated_semantic_equal": report["updated_semantic"]["equal"],
+         "safe_to_switch": report["safe_to_switch_initial_to_batch"]}), flush=True)
+    if not experiment_valid:
+        raise RuntimeError("Semantic MVT parity or incremental correctness failed")
 
 
 if __name__ == "__main__":
