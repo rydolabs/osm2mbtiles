@@ -19,7 +19,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        region: [monaco, kanto]
+        # Targeted semantic diagnosis after prior Kanto job already ran at SHA 91f65b2
+        region: [monaco]
     env:
       REGION: ${{ matrix.region }}
       WORK: /tmp/persistent-batch-probe-${{ matrix.region }}
