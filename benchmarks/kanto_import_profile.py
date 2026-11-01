@@ -19,13 +19,9 @@ import time
 
 BASE_SHA = "4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a"
 KANTO_SHA = "1af62f945ecb25a1c52db30967d7d2db1c6aaea5a17f1dbb1d53dbe55691040e"
-SAMPLES = {
-    "monaco": [(12, 2132, 1492), (14, 8528, 5969), (16, 34114, 23876)],
-    "kanto": [(12, 3637, 1613), (14, 14548, 6452), (16, 58192, 25808)],
-}
 # Derive the actual sample XYZ from fixed lat/lon instead of using guessed coordinates.
 CENTERS = {"monaco": (7.425, 43.735), "kanto": (139.75, 35.68)}
-TABLES = ["vector_points", "vector_lines", "vector_areas", "vector_roads", "vector_polygon_labels"]
+TABLES = ["vector_points", "vector_lines", "vector_areas", "vector_relations", "vector_label_points"]
 
 
 def digest(path):
