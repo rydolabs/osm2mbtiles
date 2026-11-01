@@ -1,0 +1,139 @@
+name: Frozen main Kanto safe import parameter A/B
+
+on:
+  push:
+    branches: [bench/kanto-import-safe-profile-20261101]
+    paths:
+      - '.github/workflows/kanto-import-safe-profile.yml'
+      - 'benchmarks/kanto_import_profile.py'
+      - 'benchmarks/compare_import_profiles.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kanto-import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [safe, candidate]
+    env:
+      PROFILE: ${{ matrix.profile }}
+      REGION: kanto
+      WORK: /tmp/kanto-import-${{ matrix.profile }}
+      PGHOST: /tmp/kanto-import-${{ matrix.profile }}/socket
+      PGPORT: '55495'
+      PGUSER: kantoimportaudit
+      PGDATABASE: gis
+      BASE_SHA: '4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove all production files exactly equal frozen main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --exit-code "$BASE_SHA" HEAD -- src/ vector/
+          /usr/bin/python3 -m py_compile benchmarks/kanto_import_profile.py
+      - name: Install disposable PostGIS and decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip curl ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+          mkdir -p "$WORK" "$PGHOST"
+          osm2pgsql --version
+      - name: Download frozen exact Kanto source PBF
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
+            https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
+            -o "$WORK/kanto.osm.pbf"
+          # latest is mutable: compare SHA between independent profile jobs later.
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/source.sha256"
+      - name: Start disposable PostGIS cluster outside timed intervals
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust \
+            > "$WORK/initdb.log"
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0" start
+      - name: Two independent fresh database import trials
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 benchmarks/kanto_import_profile.py \
+            --region "$REGION" --profile "$PROFILE" \
+            --pbf "$WORK/kanto.osm.pbf" --work "$WORK" --repeats 2 \
+            > "$WORK/runner.log" 2>&1 || {
+              tail -n 100 "$WORK/runner.log"
+              df -h "$WORK"
+              exit 1
+            }
+          cat "$WORK/import-profile-results.json"
+          df -h "$WORK"
+      - name: Stop disposable server
+        if: always()
+        shell: bash
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Collect timing and failure evidence without databases
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p audit-evidence
+          for file in source.sha256 import-profile-results.json runner.log \
+            postgres.log initdb.log; do
+            cp "$WORK/$file" audit-evidence/ 2>/dev/null || true
+          done
+          for f in "$WORK"/gis_import_*.log; do
+            if [[ -f "$f" ]]; then cp "$f" audit-evidence/; fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kanto-import-${{ matrix.profile }}
+          path: audit-evidence/
+          retention-days: 14
+          if-no-files-found: warn
+
+  compare-profiles:
+    needs: [kanto-import]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kanto-import-*
+          path: all-evidence
+      - name: Require identical PBF SHA and decoded sample parity across profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 benchmarks/compare_import_profiles.py \
+            --safe all-evidence/kanto-import-safe/import-profile-results.json \
+            --candidate all-evidence/kanto-import-candidate/import-profile-results.json \
+            --out import-profile-comparison.json
+          cat import-profile-comparison.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kanto-import-comparison
+          path: import-profile-comparison.json
+          retention-days: 14
