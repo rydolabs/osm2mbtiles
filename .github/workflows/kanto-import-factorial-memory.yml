@@ -1,0 +1,151 @@
+name: Kanto PostGIS import factors, memory and incremental safety
+
+on:
+  push:
+    branches: [bench/kanto-import-factorial-memory-parity-20261102]
+    paths:
+      - benchmarks/kanto_import_factorial.py
+      - tests/test_kanto_import_factorial.py
+      - .github/workflows/kanto-import-factorial-memory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pure-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python compile and pure correctness tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile benchmarks/kanto_import_factorial.py tests/test_kanto_import_factorial.py
+          python3 -m pip install --break-system-packages pytest
+          python3 -m pytest -q tests/test_kanto_import_factorial.py
+
+  real-database:
+    needs: pure-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - region: monaco
+            repeats: 1
+          - region: kanto
+            repeats: 3
+    env:
+      REGION: ${{ matrix.region }}
+      REPEATS: ${{ matrix.repeats }}
+      WORK: /tmp/osm2mbtiles-onefactor-${{ matrix.region }}
+      PGHOST: /tmp/osm2mbtiles-onefactor-${{ matrix.region }}/socket
+      PGPORT: "55498"
+      PGUSER: onefactor
+      PGDATABASE: gis
+      BASE_SHA: "a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove production code equals merged main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --exit-code "$BASE_SHA" HEAD -- src/ vector/
+          python3 -m py_compile benchmarks/kanto_import_factorial.py
+      - name: Install native database, tools and MVT decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql osmium-tool \
+            python3-psycopg2 python3-pip curl ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
+          mkdir -p "$WORK" "$PGHOST"
+          chmod 0700 "$WORK" "$PGHOST"
+          osm2pgsql --version > "$WORK/osm2pgsql-version.txt"
+          cat /sys/fs/cgroup/memory.max > "$WORK/cgroup-memory-limit.txt" || true
+      - name: Download OSM PBF once per runner for all four settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REGION" == kanto ]]; then
+            url='https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf'
+          else
+            url='https://download.geofabrik.de/europe/monaco-latest.osm.pbf'
+          fi
+          echo "$url" > "$WORK/source-url.txt"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
+               --max-time 1500 "$url" -o "$WORK/source.osm.pbf"
+          sha256sum "$WORK/source.osm.pbf" | tee "$WORK/source.sha256"
+      - name: Start disposable socket-only PostgreSQL server
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust \
+            --auth-host=trust > "$WORK/initdb.log"
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST \
+                -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB \
+                -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0 \
+                -c max_parallel_workers_per_gather=0 -c jit=off -c fsync=on" start
+      - name: Complete import factor matrix, all-tile parity, append and full rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 benchmarks/kanto_import_factorial.py \
+            --region "$REGION" --pbf "$WORK/source.osm.pbf" \
+            --work "$WORK" --repeats "$REPEATS" \
+            --independent-rebuild > "$WORK/onefactor-run.log" 2>&1 || {
+              tail -n 150 "$WORK/onefactor-run.log"
+              df -h "$WORK"
+              exit 1
+            }
+          tail -n 10 "$WORK/onefactor-run.log"
+          /usr/bin/python3 - "$WORK/onefactor-results.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d["status"]=="PASS_EXPERIMENT_NOT_APPROVED"
+          assert all(x["comparison"]["semantic_equal"] for x in d["trial_results"])
+          assert d["osc"]["independent_rebuild_parity"]["semantic_equal"]
+          for profile, stats in d["timings"].items():
+              print(profile, "median_s", round(stats["median_s"],2),
+                    "cgroup_peak_MB", stats["max_sampled_cgroup_mb"],
+                    "observed_pct", stats["observed_speedup_pct_vs_safe"])
+          PY
+          df -h "$WORK"
+      - name: Stop disposable server even after errors
+        if: always()
+        shell: bash
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Save audit reports, logs and hashes, never GIS extracts or databases
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          for file in source.sha256 source-url.txt onefactor-results.json \
+              onefactor-run.log postgres.log osm2pgsql-version.txt \
+              cgroup-memory-limit.txt initdb.log; do
+            cp "$WORK/$file" evidence/ 2>/dev/null || true
+          done
+          for f in "$WORK"/gis_probe_*.log; do
+            [[ ! -f "$f" ]] || cp "$f" evidence/
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: onefactor-${{ matrix.region }}-evidence
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: warn
