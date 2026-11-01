@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/kanto-import-safe-profile.yml'
       - 'benchmarks/kanto_import_profile.py'
+      - 'benchmarks/compare_import_profiles.py'
   workflow_dispatch:
 
 permissions:
@@ -56,10 +57,8 @@ jobs:
           curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 1500 \
             https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf \
             -o "$WORK/kanto.osm.pbf"
-          printf '%s  %s\n' \
-            '1af62f945ecb25a1c52db30967d7d2db1c6aaea5a17f1dbb1d53dbe55691040e' \
-            "$WORK/kanto.osm.pbf" | sha256sum --check
-          sha256sum "$WORK/kanto.osm.pbf" > "$WORK/source.sha256"
+          # latest is mutable: compare SHA between independent profile jobs later.
+          sha256sum "$WORK/kanto.osm.pbf" | tee "$WORK/source.sha256"
       - name: Start disposable PostGIS cluster outside timed intervals
         shell: bash
         run: |
@@ -112,3 +111,29 @@ jobs:
           path: audit-evidence/
           retention-days: 14
           if-no-files-found: warn
+
+  compare-profiles:
+    needs: [kanto-import]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kanto-import-*
+          path: all-evidence
+      - name: Require identical PBF SHA and decoded sample parity across profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 benchmarks/compare_import_profiles.py \
+            --safe all-evidence/kanto-import-safe/import-profile-results.json \
+            --candidate all-evidence/kanto-import-candidate/import-profile-results.json \
+            --out import-profile-comparison.json
+          cat import-profile-comparison.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kanto-import-comparison
+          path: import-profile-comparison.json
+          retention-days: 14
