@@ -62,3 +62,4 @@ jobs:
           name: osm2mbtiles-handoff-source-20261101
           path: bundle/
           retention-days: 14
+          include-hidden-files: true
