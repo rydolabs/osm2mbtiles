@@ -1,0 +1,64 @@
+name: One-time handoff source snapshot
+
+on:
+  push:
+    branches: [handoff/osm2mbtiles-20261101]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export source snapshots from exact pinned commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN='4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a'
+          PR16='24cf861cc113cd0ce34f7620772a3aa14e228769'
+          PR17='fc53008f75a403abba12ce2abddf1a88bd758785'
+          PR18='579ef1264726681471ae2b375cdba54b190ba53d'
+          PR20='f8855be2d0f0ff5eb37279ee18ef2912ab496b59'
+          mkdir -p bundle/source-main bundle/experiments
+          for SHA in "$MAIN" "$PR16" "$PR17" "$PR18" "$PR20"; do
+            git cat-file -e "$SHA^{commit}" || git fetch origin "$SHA"
+          done
+          git archive "$MAIN" | tar -xf - -C bundle/source-main
+          copy_one() {
+            local commit="$1" output="$2" path="$3"
+            mkdir -p "bundle/experiments/$output/$(dirname "$path")"
+            git show "$commit:$path" > "bundle/experiments/$output/$path"
+          }
+          copy_one "$PR16" pr16-batch-vs-planetiler benchmarks/kanto_current_main_vs_planetiler.py || true
+          copy_one "$PR16" pr16-batch-vs-planetiler .github/workflows/kanto-main-vs-planetiler.yml || true
+          copy_one "$PR16" pr16-batch-vs-planetiler docs/KANTO-MAIN-PLANETILER-2026-10-30.md
+          copy_one "$PR17" pr17-incremental benchmarks/kanto_incremental_timing.py
+          copy_one "$PR17" pr17-incremental .github/workflows/kanto-incremental-timing.yml
+          copy_one "$PR18" pr18-persistent-batch benchmarks/persistent_batch_probe.py
+          copy_one "$PR18" pr18-persistent-batch tests/test_persistent_batch_probe.py
+          copy_one "$PR18" pr18-persistent-batch .github/workflows/persistent-batch-safe-profiling.yml
+          copy_one "$PR18" pr18-persistent-batch docs/PERSISTENT-BATCH-SAFETY-AUDIT-2026-10-30.md
+          copy_one "$PR20" pr20-import-AB benchmarks/kanto_import_profile.py
+          copy_one "$PR20" pr20-import-AB benchmarks/compare_import_profiles.py
+          copy_one "$PR20" pr20-import-AB .github/workflows/kanto-import-safe-profile.yml
+          cat > bundle/REVISIONS.txt <<'EOF'
+          Main: 4b7f84ce8bf7a8d4227c1e7f557e9a4056c3db7a
+          PR16: 24cf861cc113cd0ce34f7620772a3aa14e228769
+          PR17: fc53008f75a403abba12ce2abddf1a88bd758785
+          PR18: 579ef1264726681471ae2b375cdba54b190ba53d
+          PR20: f8855be2d0f0ff5eb37279ee18ef2912ab496b59
+          Bundle excludes PBF extracts, PostGIS clusters, node data, and MBTiles.
+          EOF
+          (cd bundle && find . -type f -print0 | sort -z | xargs -0 sha256sum > FILE_MANIFEST.sha256)
+          du -sh bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osm2mbtiles-handoff-source-20261101
+          path: bundle/
+          retention-days: 14
