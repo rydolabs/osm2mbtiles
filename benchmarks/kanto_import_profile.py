@@ -98,8 +98,9 @@ def main():
         raise ValueError("1..3 repeats only")
     if os.environ.get("PGDATABASE") != "gis":
         raise RuntimeError("Only disposable PGDATABASE=gis is allowed")
-    if a.region == "kanto" and digest(a.pbf) != KANTO_SHA:
-        raise RuntimeError("Kanto source checksum mismatch")
+    expected = os.environ.get("EXPECTED_PBF_SHA256")
+    if expected and digest(a.pbf) != expected:
+        raise RuntimeError("PBF checksum mismatch: expected " + expected)
     a.work.mkdir(parents=True, exist_ok=True)
     repo = Path(__file__).resolve().parents[1]
     style = repo/"vector"/"vector-flex.lua"
