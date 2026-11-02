@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "berlin-stress-vector-postgis-projected-warm-v1",
+  "measurement_scope": "warm_vector_tile_export_only",
+  "purpose": "Frozen Berlin performance comparison reference for subsequent vector tile optimization; not a cold PBF-to-MBTiles baseline",
+  "evidence": {
+    "workflow_run_url": "https://github.com/rydolabs/osm2mbtiles/actions/runs/41391824503",
+    "workflow_run_id": 41391824503,
+    "artifact_id": 13118850671,
+    "artifact_name": "vector-io-berlin-stress-evidence",
+    "production_commit_sha": "a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024",
+    "benchmark_commit_sha": "b73be36c80f2eee683bb9e804b574f47ac64b323",
+    "measured_at_utc": "2026-11-02"
+  },
+  "input": {
+    "region": "berlin-stress",
+    "url": "https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf",
+    "sha256": "51d3845df2e4b1334ebec7cf6516e41e71735ce2fc1c0975c52d57f58f1952ad",
+    "size_bytes": 99604748,
+    "bbox": [
+      13.088,
+      52.338,
+      13.761,
+      52.676
+    ],
+    "zoom": [
+      12,
+      16
+    ],
+    "planned_xyz": 16943
+  },
+  "setup": {
+    "runner": "GitHub Actions ubuntu-24.04 hosted runner",
+    "postgresql_version": "16.15",
+    "postgis_version": "3.4",
+    "osm2pgsql_version": "1.11.0",
+    "import_processes": 1,
+    "import_cache_mb": 384,
+    "import_args": [
+      "--slim",
+      "--drop",
+      "--cache=384",
+      "--number-processes=1",
+      "--disable-parallel-indexing",
+      "-O",
+      "flex"
+    ],
+    "shared_buffers_mb": 96,
+    "work_mem_mb": 8,
+    "maintenance_work_mem_mb": 64,
+    "max_parallel_maintenance_workers": 0,
+    "max_parallel_workers_per_gather": 0,
+    "jit": "off",
+    "fsync": "on",
+    "query_mode": "projected",
+    "tile_workers": 4,
+    "gzip_level": 6,
+    "gzip_mtime": 0
+  },
+  "one_time_import_plus_derived_sql": {
+    "elapsed_wall_seconds_rounded": 51,
+    "trials": 1,
+    "included_in_export_median": false,
+    "note": "Shell SECONDS is integer precision. Not an independent cold whole-pipeline benchmark."
+  },
+  "export": {
+    "profile": "legacy",
+    "repeats": 3,
+    "wall_seconds": [
+      125.644,
+      124.87,
+      124.938
+    ],
+    "median_seconds": 124.938,
+    "minimum_seconds": 124.87,
+    "maximum_seconds": 125.644,
+    "nonempty_xyz": 12047,
+    "total_gzip_tile_data_bytes": 229882912,
+    "sqlite_file_bytes": 237486080,
+    "byte_parity": "All 3 candidate modes match the reference within each run; cross-revision byte identity was not evaluated",
+    "all_profiles_original_3_trial_medians_seconds": {
+      "legacy": 124.938,
+      "worker-gzip": 125.347,
+      "worker-gzip-batch": 124.974
+    }
+  },
+  "limitations": [
+    "This is a WARM tile export measurement after one already-completed PBF import, not complete initial PBF-to-MBTiles time.",
+    "GitHub hosted runners are not fixed hardware: historical ratios are diagnostic only, not acceptance proof.",
+    "Future SQL/output changes must compare exact gzip blobs against the pinned original exporter on the SAME database; the report's within-run checks alone are insufficient for cross-revision byte compatibility.",
+    "Do not infer that this 384MB benchmark import matches the unmerged native-default-cache PR #22 or the persistent incremental --slim mode.",
+    "The Berlin bounding box includes cells outside the Berlin polygon; 16943 planned cells are not 16943 nonempty MBTiles tiles."
+  ]
+}

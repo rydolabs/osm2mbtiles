@@ -11,10 +11,34 @@ Use the official [Geofabrik Berlin extract](https://download.geofabrik.de/europe
 | Smoke | Geofabrik Monaco | `7.41,43.72,7.44,43.75` | z12–16 | 87 | Feature and configuration smoke; too small for speed claims |
 | Berlin centre | Geofabrik Berlin | `13.35,52.49,13.45,52.54` | z12–16 | 432 | Fast setup and geometry parity |
 | **Berlin main** | Geofabrik Berlin | **`13.20,52.45,13.60,52.60`** | **z12–16** | **4,573** | **Primary three-engine benchmark** |
-| Berlin stress | Geofabrik Berlin | `13.088,52.338,13.761,52.676` | z12–16 | 16,943 | Optional scaling; includes cells beyond the city extract |
+| **Berlin stress** | Geofabrik Berlin | `13.088,52.338,13.761,52.676` | z12–16 | **16,943** | **Default for internal MVT export optimization**; includes cells beyond the city extract |
 | Seoul historical | independent Seoul non-military PBF | `126.75,37.40,127.20,37.72` | z12–16 | 8,418 | Historical regression; not the primary public benchmark |
 
 All counts are exact *requested Web Mercator XYZ grid positions*, computed with `src/osm2mbtiles/tiles.py::tile_count`; they are **not the number of nonempty MBTiles records**. Geofabrik extracts follow region polygons; a rectangular bbox may contain cells with no source data. The Berlin main bbox selects a central urban rectangle, **not** the Berlin municipal boundary.
+
+### Recorded default: Berlin vector-export performance baseline (2026-11-02)
+
+For **internal osm2mbtiles vector tile-export optimization**, use **Berlin stress** by default. The **Berlin main** profile remains the primary *three-engine* comparison region; the two tracks have different purposes.
+
+- Frozen PBF: [Geofabrik Berlin 2026-10-01](https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf), 99,604,748 bytes, SHA-256 `51d3845df2e4b1334ebec7cf6516e41e71735ce2fc1c0975c52d57f58f1952ad`.
+- Map coverage: bbox `13.088,52.338,13.761,52.676`, zoom 12–16, **16,943 requested XYZ cells / 12,047 nonempty tiles**, 229,882,912 compressed tile payload bytes (MBTiles file 237,486,080 bytes).
+- Frozen production `a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024`, PostgreSQL 16.15 / PostGIS 3.4 / osm2pgsql 1.11.0; `--slim --drop --cache=384 --number-processes=1 --disable-parallel-indexing`, 4 tile workers, `projected` SQL, gzip level 6 and mtime 0.
+- Initial PBF import **plus** `vector/post-import.sql`: **51 seconds** in **one run**, rounded to whole seconds; measured separately, **not** a cold end-to-end total.
+- **Production legacy warm PostGIS tile export**: **125.644 / 124.870 / 124.938 seconds** (three repetitions), **124.938s median**. This is the canonical reference for future *warm tile-export* comparisons.
+- Worker-side gzip: 125.347s median (**0.33% slower**), worker-side gzip plus SQLite batching: 124.974s median (**0.03% slower**). Both modes matched every stored gzip tile byte and XYZ coordinate against production legacy **within each same-DB trial**; **not worth adopting** from this evidence.
+
+The machine-readable frozen baseline is [`benchmarks/baselines/berlin-stress-vector-postgis-20261102.json`](../benchmarks/baselines/berlin-stress-vector-postgis-20261102.json). Raw evidence and exact command execution are in [GitHub Actions run #41391824503](https://github.com/rydolabs/osm2mbtiles/actions/runs/41391824503) (artifact `vector-io-berlin-stress-evidence`). The Berlin benchmarking workflow is [`vector-export-io-profile.yml`](../.github/workflows/vector-export-io-profile.yml); default region configuration is [`regions.json`](../benchmarks/regions.json).
+
+For a later run with the **same exact PBF SHA, bbox, zoom, worker count, tile count and gzip payload size**, compare its generated `export-io-profile.json` against the saved baseline:
+
+```bash
+python3 benchmarks/compare_berlin_baseline.py \
+  --result /path/to/export-io-profile.json \
+  --profile legacy \
+  --output /path/to/berlin-comparison.json
+```
+
+The comparator fails closed if the workload or output size/count changes and reports median and percentage difference. **It never approves production adoption** on historical elapsed times: GitHub runners can change CPU/storage performance. A speed claim needs three or more paired **same-runner** measurements, independent source/runner version records and full initial PBF-to-MBTiles timing if the goal is end-to-end throughput. Changes to SQL, MVT order or gzip must additionally prove **every XYZ and compressed tile blob matches the frozen baseline exporter on the same imported PostGIS database**. The historical comparison's within-run byte check does **not** establish cross-revision byte identity.
 
 ### How to publish comparable results
 
