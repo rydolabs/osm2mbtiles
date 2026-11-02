@@ -44,7 +44,12 @@ def run_logged(args, logfile, env, cwd=None):
                        stdout=log,stderr=subprocess.STDOUT,check=True)
 
 
-def archive_manifest(path):
+def archive_manifest(path, *, verify_decoded=False):
+    # Independent fresh DBs can change physical feature iteration order and
+    # gzip bytes. Compare full *decoded feature multisets* between DBs, while
+    # retaining exact compressed SHA256 for independent diagnostic reporting.
+    if verify_decoded:
+        import mapbox_vector_tile
     with sqlite3.connect(path) as db:
         if db.execute("PRAGMA integrity_check").fetchone()[0]!="ok":
             raise RuntimeError("SQLite integrity check failed")
@@ -53,6 +58,8 @@ def archive_manifest(path):
             raise RuntimeError("Wrong MBTiles codec")
         meta.pop("name",None)
         rows={}
+        decoded={}
+        features_total=0
         total=0
         for z,x,tms,gzip_data in db.execute(
                 "SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles"):
@@ -61,8 +68,25 @@ def archive_manifest(path):
                 raise RuntimeError("Missing gzip data or duplicate XYZ")
             rows[xyz]=hashlib.sha256(gzip_data).hexdigest()
             total+=len(gzip_data)
-        return {"metadata":meta,"rows":rows,"compressed_bytes":total,
-                "file_bytes":path.stat().st_size}
+            if verify_decoded:
+                layers=mapbox_vector_tile.decode(gzip.decompress(gzip_data))
+                canonical=[]
+                for name,layer in sorted(layers.items()):
+                    # Hash one feature at a time, sort hashes to preserve
+                    # duplicates while ignoring nonsemantic feature ordering.
+                    features=sorted(
+                        hashlib.sha256(json.dumps(f,sort_keys=True,
+                            separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+                        for f in layer.get("features",[]))
+                    features_total+=len(features)
+                    canonical.append((name,layer.get("extent"),
+                                      layer.get("version"),features))
+                decoded[xyz]=hashlib.sha256(json.dumps(
+                    canonical,separators=(",",":"),ensure_ascii=False
+                    ).encode()).hexdigest()
+        return {"metadata":meta,"rows":rows,"decoded":decoded,
+                "decoded_feature_total":features_total,
+                "compressed_bytes":total,"file_bytes":path.stat().st_size}
 
 
 def main():
@@ -155,24 +179,37 @@ def main():
                 written=vector.export(args.pbf,archive,BBOX,LO,HI,4)
                 steps["vector_export_s"]=round(time.perf_counter()-t,3)
                 steps["full_wall_s"]=round(time.perf_counter()-started,3)
-                sig=archive_manifest(archive)
+                sig=archive_manifest(archive,verify_decoded=True)
                 if len(sig["rows"])!=EXPECTED_NONEMPTY or written!=EXPECTED_NONEMPTY:
                     raise RuntimeError("Berlin output XYZ count changed")
-                if sig["compressed_bytes"]!=EXPECTED_GZIP_BYTES:
-                    raise RuntimeError("Berlin gzip byte count changed")
+                if not sig["decoded"] or len(sig["decoded"])!=EXPECTED_NONEMPTY:
+                    raise RuntimeError("Berlin full decoded feature validation incomplete")
                 entry={"trial":iteration,"status":"PASS","stages":steps,
                        "nonempty_xyz":len(sig["rows"]),
                        "compressed_tile_bytes":sig["compressed_bytes"],
+                       "compressed_size_equals_historical":(
+                           sig["compressed_bytes"]==EXPECTED_GZIP_BYTES),
+                       "decoded_feature_total":sig["decoded_feature_total"],
                        "mbtiles_file_bytes":sig["file_bytes"]}
                 report["trials"].append(entry)
                 if prior:
                     differing=sum(1 for xyz in set(prior["rows"]) | set(sig["rows"])
                                    if prior["rows"].get(xyz)!=sig["rows"].get(xyz))
-                    comparisons.append({
+                    semantic_diffs=[
+                        xyz for xyz in set(prior["decoded"]) | set(sig["decoded"])
+                        if prior["decoded"].get(xyz)!=sig["decoded"].get(xyz)]
+                    comparison={
                         "reference_trial":1,"other_trial":iteration,
                         "gzip_mismatches":differing,
+                        "decoded_semantic_mismatches":len(semantic_diffs),
+                        "decoded_semantic_examples":semantic_diffs[:12],
                         "xyz_equal":set(prior["rows"])==set(sig["rows"]),
-                        "metadata_equal":prior["metadata"]==sig["metadata"]})
+                        "metadata_equal":prior["metadata"]==sig["metadata"]}
+                    comparisons.append(comparison)
+                    if (semantic_diffs or not comparison["xyz_equal"]
+                            or not comparison["metadata_equal"]):
+                        raise RuntimeError(
+                            "Independent DB semantic or metadata parity failed")
                 else:
                     prior=sig
                 print("COLD_BERLIN_TRIAL",json.dumps(entry),flush=True)

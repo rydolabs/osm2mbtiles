@@ -53,3 +53,33 @@ def test_archive_manifest_fails_closed_on_nongzip(tmp_path):
         db.execute("INSERT INTO tiles VALUES (12, 1, 2, ?)",(b"not gzip",))
     with pytest.raises(RuntimeError,match="gzip"):
         cold.archive_manifest(p)
+
+
+def test_independent_db_semantic_multiset_ignores_mvt_feature_order(tmp_path):
+    import mapbox_vector_tile
+
+    a={"geometry":{"type":"Point","coordinates":[100,100]},
+       "properties":{"name":"a"},"id":1}
+    b={"geometry":{"type":"Point","coordinates":[200,200]},
+       "properties":{"name":"b"},"id":2}
+
+    def make(path,features):
+        encoded=mapbox_vector_tile.encode({"name":"poi","features":features})
+        with sqlite3.connect(path) as db:
+            db.execute("CREATE TABLE metadata(name text PRIMARY KEY,value text)")
+            db.executemany("INSERT INTO metadata VALUES (?,?)",
+                           [("name",path.stem),("format","pbf")])
+            db.execute("CREATE TABLE tiles(zoom_level integer,tile_column integer,"
+                       "tile_row integer,tile_data blob)")
+            db.execute("INSERT INTO tiles VALUES (12, 2198, 2752, ?)",
+                       (gzip.compress(encoded,compresslevel=6,mtime=0),))
+
+    left,right=tmp_path/"a.mbtiles",tmp_path/"b.mbtiles"
+    make(left,[a,b])
+    make(right,[b,a])
+    first=cold.archive_manifest(left,verify_decoded=True)
+    second=cold.archive_manifest(right,verify_decoded=True)
+    assert first["rows"] != second["rows"]
+    assert first["decoded"]==second["decoded"]
+    assert first["decoded_feature_total"]==2
+    assert second["decoded_feature_total"]==2

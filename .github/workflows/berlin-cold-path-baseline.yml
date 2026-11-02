@@ -21,7 +21,7 @@ jobs:
       - name: Parse new benchmark, frozen Berlin match and strict gzip integrity
         run: |
           set -euo pipefail
-          python3 -m pip install --break-system-packages pytest
+          python3 -m pip install --break-system-packages pytest mapbox-vector-tile
           python3 -m py_compile benchmarks/berlin_cold_path_baseline.py
           PYTHONPATH="$GITHUB_WORKSPACE/src" python3 -m pytest -q \
             tests/test_berlin_cold_path_baseline.py \
@@ -58,6 +58,7 @@ jobs:
             postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
             postgresql-16-postgis-3-scripts osm2pgsql \
             python3-psycopg2 python3-pip curl ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages mapbox-vector-tile
           mkdir -p "$WORK" "$PGHOST"
           chmod 0700 "$WORK" "$PGHOST"
           osm2pgsql --version
