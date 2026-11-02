@@ -20,4 +20,4 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "Pillow>=10"]
+test = ["pytest>=8", "Pillow>=10", "mapbox-vector-tile>=2,<3"]
