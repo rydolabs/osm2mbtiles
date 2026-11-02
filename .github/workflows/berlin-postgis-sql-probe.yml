@@ -1,0 +1,160 @@
+name: Berlin frozen PostGIS SQL plan and prepared-statement pilot
+
+on:
+  push:
+    branches: [bench/vector-export-io-byte-parity-20261102]
+    paths:
+      - benchmarks/berlin_postgis_sql_probe.py
+      - tests/test_berlin_postgis_sql_probe.py
+      - .github/workflows/berlin-postgis-sql-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pure-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate SQL prepared placeholder contract and Berlin input
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages pytest
+          python3 -m py_compile benchmarks/berlin_postgis_sql_probe.py
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python3 -m pytest -q \
+            tests/test_berlin_postgis_sql_probe.py \
+            tests/test_compare_berlin_baseline.py \
+            tests/test_benchmark_regions.py
+
+  real-berlin:
+    needs: pure-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      WORK: /tmp/osm2mbtiles-sql-berlin
+      PGHOST: /tmp/osm2mbtiles-sql-berlin/socket
+      PGPORT: '55514'
+      PGDATABASE: gis
+      PGUSER: sqlprobe
+      OSM2MBTILES_VECTOR_QUERY_MODE: projected
+      BASE_SHA: 'a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert exact production SQL and vector source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --exit-code "$BASE_SHA" HEAD -- src/ vector/
+          python3 -m py_compile benchmarks/berlin_postgis_sql_probe.py
+      - name: Install frozen-class native runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip curl ca-certificates
+          mkdir -p "$WORK" "$PGHOST"
+          chmod 0700 "$WORK" "$PGHOST"
+          osm2pgsql --version | tee "$WORK/version.txt"
+          df -h "$WORK"
+      - name: Acquire exact 2026-10-01 Berlin snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
+            --max-time 1200 \
+            "https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf" \
+            -o "$WORK/source.osm.pbf"
+          sha256sum "$WORK/source.osm.pbf" | tee "$WORK/source.sha256"
+          echo "51d3845df2e4b1334ebec7cf6516e41e71735ce2fc1c0975c52d57f58f1952ad  $WORK/source.osm.pbf" \
+            | sha256sum -c
+          test "$(stat -c %s "$WORK/source.osm.pbf")" -eq 99604748
+      - name: Start disposable PostGIS with baseline settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust \
+            > "$WORK/initdb.log"
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT \
+                -c shared_buffers=96MB -c work_mem=8MB -c maintenance_work_mem=64MB \
+                -c max_parallel_maintenance_workers=0 -c max_parallel_workers_per_gather=0 \
+                -c jit=off -c fsync=on" start
+          createdb gis
+          psql -X -v ON_ERROR_STOP=1 -c \
+            "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+      - name: Import Berlin PBF once, preserving frozen 384MB benchmark setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          start=$SECONDS
+          osm2pgsql --slim --drop --cache=384 --number-processes=1 \
+            --disable-parallel-indexing -O flex -S vector/vector-flex.lua \
+            -d gis "$WORK/source.osm.pbf" > "$WORK/import.log" 2>&1 || {
+              tail -n 90 "$WORK/import.log"
+              exit 1
+            }
+          psql -X -v ON_ERROR_STOP=1 -f vector/post-import.sql \
+            > "$WORK/derived.log" 2>&1 || {
+              tail -n 60 "$WORK/derived.log"
+              exit 1
+            }
+          echo "$((SECONDS-start))" > "$WORK/import-plus-derived-seconds.txt"
+      - name: EXPLAIN ANALYZE BUFFERS and 3x paired SQL candidate pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 benchmarks/berlin_postgis_sql_probe.py \
+            --pbf "$WORK/source.osm.pbf" --work "$WORK" --workers 4 \
+            > "$WORK/sql-probe.log" 2>&1 || {
+              tail -n 150 "$WORK/sql-probe.log"
+              exit 1
+            }
+          tail -n 35 "$WORK/sql-probe.log"
+          /usr/bin/python3 - "$WORK/sql-probe.json" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          assert p["status"] in (
+              "NO_MEANINGFUL_PILOT_GAIN",
+              "BYTE_PARITY_BLOCKED",
+              "FULL_CANDIDATE_PASS",
+              "FULL_GAIN_BELOW_THRESHOLD",
+              "FULL_BYTE_PARITY_BLOCKED"), p["status"]
+          assert len(p["sql_plans"])==9
+          print("SQL_PROBE_FINAL_STATUS",p["status"])
+          print("SQL_PROBE_CANDIDATE_APPROVED",p["adopt_production"])
+          PY
+      - name: Stop dedicated PostGIS instance
+        if: always()
+        shell: bash
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Collect diagnostic evidence only
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          for file in version.txt source.sha256 initdb.log postgres.log \
+              import.log derived.log import-plus-derived-seconds.txt \
+              sql-probe.log sql-probe.json; do
+            cp "$WORK/$file" evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: berlin-sql-prepared-probe-evidence
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: warn

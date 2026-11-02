@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Planned reproducible benchmark regions, not measured speed results",
+  "description": "Reproducible benchmark regions; Berlin stress warm vector baseline recorded separately (not full PBF-to-MBTiles)",
   "regions": [
     {
       "id": "monaco-smoke",
@@ -54,7 +54,7 @@
       "id": "berlin-stress",
       "country": "Germany",
       "role": "stress",
-      "pbf_url": "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf",
+      "pbf_url": "https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf",
       "bbox": [
         13.088,
         52.338,
@@ -64,7 +64,11 @@
       "minzoom": 12,
       "maxzoom": 16,
       "xyz_grid_cells": 16943,
-      "measured": false
+      "measured": true,
+      "pbf_sha256": "51d3845df2e4b1334ebec7cf6516e41e71735ce2fc1c0975c52d57f58f1952ad",
+      "pbf_size_bytes": 99604748,
+      "baseline_file": "benchmarks/baselines/berlin-stress-vector-postgis-20261102.json"
     }
-  ]
+  ],
+  "default_internal_performance_region": "berlin-stress"
 }

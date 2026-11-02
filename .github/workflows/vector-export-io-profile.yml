@@ -1,0 +1,175 @@
+name: Berlin full-region stress vector export I/O and gzip byte-parity
+
+on:
+  push:
+    branches: [bench/vector-export-io-byte-parity-20261102]
+    paths:
+      - benchmarks/vector_export_io_profile.py
+      - tests/test_vector_export_io_profile.py
+      - .github/workflows/vector-export-io-profile.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pure-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile benchmark and test strict gzip-blob comparison
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages pytest
+          python3 -m py_compile benchmarks/vector_export_io_profile.py tests/test_vector_export_io_profile.py
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python3 -m pytest -q tests/test_vector_export_io_profile.py
+
+  real-database:
+    needs: pure-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 135
+    strategy:
+      fail-fast: false
+      matrix:
+        # Previous head separately ran Monaco and Kanto. Avoid paying for a
+        # duplicate Kanto DB import; this push specifically upgrades the tiny
+        # Monaco smoke to Berlin city-wide stress with repeated full exports.
+        include:
+          - region: berlin-stress
+            repeats: 3
+    env:
+      REGION: ${{ matrix.region }}
+      REPEATS: ${{ matrix.repeats }}
+      WORK: /tmp/osm2mbtiles-io-${{ matrix.region }}
+      PGHOST: /tmp/osm2mbtiles-io-${{ matrix.region }}/socket
+      PGPORT: '55512'
+      PGUSER: ioaudit
+      PGDATABASE: gis
+      OSM2MBTILES_VECTOR_QUERY_MODE: projected
+      BASE_SHA: 'a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify importer and tile SQL exactly frozen at known main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --exit-code "$BASE_SHA" HEAD -- src/ vector/
+          python3 -m py_compile benchmarks/vector_export_io_profile.py
+      - name: Install PostGIS, osm2pgsql and Python DB driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip curl ca-certificates
+          mkdir -p "$WORK" "$PGHOST"
+          chmod 0700 "$WORK" "$PGHOST"
+          osm2pgsql --version | tee "$WORK/version.txt"
+          df -h "$WORK"
+      - name: Download one OSM PBF for all tile exporter repetitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REGION" == berlin-stress ]]; then
+            # Frozen 2026-10-01 Berlin extract, not a moving 'latest' URL.
+            url="https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf"
+          else
+            echo "Unexpected benchmark region: $REGION" >&2
+            exit 2
+          fi
+          echo "$url" > "$WORK/source-url.txt"
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
+            --max-time 1500 "$url" -o "$WORK/source.osm.pbf"
+          sha256sum "$WORK/source.osm.pbf" | tee "$WORK/source.sha256"
+      - name: Start disposable local PostGIS cluster with safe settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust \
+             > "$WORK/initdb.log"
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT \
+                -c shared_buffers=96MB -c work_mem=8MB -c maintenance_work_mem=64MB \
+                -c max_parallel_maintenance_workers=0 -c max_parallel_workers_per_gather=0 \
+                -c jit=off -c fsync=on" start
+          createdb gis
+          psql -X -v ON_ERROR_STOP=1 -c \
+            "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+      - name: One-time source import, four-worker warm PostGIS for all exporters
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          date -u +%Y-%m-%dT%H:%M:%SZ | tee "$WORK/import-start.txt"
+          start=$SECONDS
+          osm2pgsql --slim --drop --cache=384 --number-processes=1 \
+            --disable-parallel-indexing -O flex -S vector/vector-flex.lua \
+            -d gis "$WORK/source.osm.pbf" > "$WORK/import.log" 2>&1 || {
+              tail -n 100 "$WORK/import.log"
+              df -h "$WORK"
+              exit 1
+            }
+          psql -X -v ON_ERROR_STOP=1 -f vector/post-import.sql \
+            > "$WORK/derived.log" 2>&1 || {
+              tail -n 80 "$WORK/derived.log"
+              exit 1
+            }
+          echo "$((SECONDS - start))" > "$WORK/import-plus-derived-seconds.txt"
+          df -h "$WORK"
+      - name: Three repeated full Berlin 16943-XYZ exports with strict gzip byte parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 benchmarks/vector_export_io_profile.py \
+            --region "$REGION" --pbf "$WORK/source.osm.pbf" \
+            --work "$WORK" --workers 4 --repeats "$REPEATS" \
+            > "$WORK/profile.log" 2>&1 || {
+              tail -n 160 "$WORK/profile.log"
+              df -h "$WORK"
+              exit 1
+            }
+          tail -n 25 "$WORK/profile.log"
+          /usr/bin/python3 - "$WORK/export-io-profile.json" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x["status"]=="PASS_EXPLORATORY_ONLY", x["status"]
+          assert len(x["trials"])==3*x["repeats"]
+          assert x["region"]=="berlin-stress" and x["planned_xyz"]>=10000
+          assert x["source_pbf_size_bytes"] > 50 * 1024 * 1024
+          assert all(c["exact_gzip_and_xyz"] for c in x["comparisons"])
+          for name,row in x["timings"].items():
+              print(name,"median tile-export seconds",row["median_s"],
+                    "relative improvement",row["speedup_pct_vs_legacy"],"%")
+          PY
+      - name: Stop disposable server, no production data ever touched
+        if: always()
+        shell: bash
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Collect profiling evidence, no PBF or DB directories
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          for file in source-url.txt source.sha256 version.txt import-start.txt \
+              import-plus-derived-seconds.txt initdb.log postgres.log \
+              import.log derived.log profile.log export-io-profile.json; do
+            cp "$WORK/$file" evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vector-io-${{ matrix.region }}-evidence
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: warn
