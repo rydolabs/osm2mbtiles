@@ -46,6 +46,8 @@ run.bat both 12-14
 
 The launcher selects a local `.osm.pbf` file (you can also drag a PBF onto `run.bat`). These commands are for **Command Prompt / Windows**, not a Linux shell.
 
+For the Seoul-specific manual smoke test, use `tests\test-seoul.bat` (not the default launcher).
+
 ### Linux / WSL: vector from PBF
 
 From the repository root, after preparing the [native runtime](#requirements):
@@ -122,6 +124,6 @@ Verify CLI options with `python3 -m osm2mbtiles --help`, or check a native runti
 
 The repository has GitHub Actions coverage for Python tests, real Mapnik PNG smoke rendering, and synthetic OSM diff versus independent full-rebuild feature parity. Berlin vector export benchmarks preserve pinned PBF checksums and measure cold and warm stages separately.
 
-**No generalized fastest-converter claim:** profiles, machine environments and cold/warm work differ. See the [Berlin benchmark protocol](docs/BENCHMARKS.md), [output stability](docs/OUTPUT-STABILITY-REGRESSION.md) and [update lifecycle limitations](docs/UPDATE-LIFECYCLE-BENCHMARK.md).
+**No generalized fastest-converter claim:** the primary comparison region is **Berlin**, while **Monaco** is a small smoke-test extract. Historical **Planetiler** and **Tilemaker** comparisons use different feature profiles; machine environments and cold/warm work also differ. See the [Berlin benchmark protocol](docs/BENCHMARKS.md), [output stability](docs/OUTPUT-STABILITY-REGRESSION.md) and [update lifecycle limitations](docs/UPDATE-LIFECYCLE-BENCHMARK.md).
 
 **Attribution:** Project [MIT](LICENSE). Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), subject to ODbL and attribution. Mapnik, OSM Carto, fonts, PostgreSQL/PostGIS and other dependencies retain their own licenses.
