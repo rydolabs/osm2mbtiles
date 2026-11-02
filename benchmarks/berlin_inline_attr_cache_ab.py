@@ -294,11 +294,41 @@ def main():
     save(args.output,report)
     try:
         import psycopg2
-        with psycopg2.connect(dbname="gis") as conn:
+        # Psycopg2 connection context managers open a transaction even when
+        # autocommit is set. VACUUM must run outside that block.
+        conn=psycopg2.connect(dbname="gis")
+        try:
             conn.autocommit=True
             with conn.cursor() as cur:
+                pre_cache={}
+                cur.execute("SET statement_timeout = 90000")
+                for z,x,y in xyz_samples():
+                    cur.execute(vector.query_for_zoom(z,projected=True),
+                                (z,x,y,z,x,y))
+                    pre_cache[(z,x,y)]=hashlib.sha256(
+                        bytes(cur.fetchone()[0] or b"")).hexdigest()
+                cur.execute("RESET statement_timeout")
                 build_cache(cur,report,args.output)
-                sample_queries(cur,report,args.output)
+                report["precache_byte_gate"]={"xyz_checked":len(pre_cache),
+                    "baseline_raw_mvt_mismatches":0,"mismatch_xyz":[]}
+                cur.execute("SET statement_timeout = 90000")
+                for (z,x,y),before in pre_cache.items():
+                    cur.execute(vector.query_for_zoom(z,projected=True),
+                                (z,x,y,z,x,y))
+                    after=hashlib.sha256(bytes(cur.fetchone()[0] or b"")).hexdigest()
+                    if before!=after:
+                        report["precache_byte_gate"]["baseline_raw_mvt_mismatches"]+=1
+                        report["precache_byte_gate"]["mismatch_xyz"].append([z,x,y])
+                save(args.output,report)
+                print("INLINE_ATTR_PRECACHE_GATE",
+                      json.dumps(report["precache_byte_gate"]),flush=True)
+                if report["precache_byte_gate"]["baseline_raw_mvt_mismatches"]:
+                    report["status"]="STOP_PRECACHE_BYTE_GATE"
+                    save(args.output,report)
+                else:
+                    sample_queries(cur,report,args.output)
+        finally:
+            conn.close()
         if report["status"] == "PROMISING_FULL_AB":
             paired_full(args.pbf,report,args.output)
         else:
