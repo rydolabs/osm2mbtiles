@@ -10,6 +10,7 @@ cold or full packaged-CLI setup measurement. No non-disposable DB is touched.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
