@@ -1,0 +1,130 @@
+name: Berlin pool chunksize 1 vs 4 strict A/B
+
+on:
+  push:
+    branches: [bench/berlin-pool-chunksize-ab-20261102]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pure-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test benchmark-only dispatch override
+        run: |
+          set -euo pipefail
+          python3 -m pip install --break-system-packages pytest
+          python3 -m py_compile benchmarks/berlin_pool_chunksize_ab.py
+          PYTHONPATH="$GITHUB_WORKSPACE/src" python3 -m pytest -q tests/test_berlin_pool_chunksize_ab.py
+
+  real-berlin-ab:
+    needs: pure-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      WORK: /tmp/osm2mbtiles-chunk-berlin
+      PGHOST: /tmp/osm2mbtiles-chunk-berlin/socket
+      PGPORT: '55521'
+      PGUSER: chunkprobe
+      PGDATABASE: gis
+      OSM2MBTILES_VECTOR_QUERY_MODE: projected
+      SOURCE_SHA: '51d3845df2e4b1334ebec7cf6516e41e71735ce2fc1c0975c52d57f58f1952ad'
+      BASE_SHA: 'a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert production source and vector importer are frozen
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --exit-code "$BASE_SHA" HEAD -- src/ vector/
+      - name: Install disposable Berlin dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql python3-psycopg2 \
+            curl ca-certificates
+          mkdir -p "$WORK" "$PGHOST"
+          chmod 0700 "$WORK" "$PGHOST"
+          osm2pgsql --version > "$WORK/versions.txt"
+          psql --version >> "$WORK/versions.txt"
+          python3 --version >> "$WORK/versions.txt"
+      - name: Fetch pinned Geofabrik Berlin PBF
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 900 \
+            "https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf" \
+            -o "$WORK/source.osm.pbf"
+          test "$(stat -c%s "$WORK/source.osm.pbf")" = 99604748
+          echo "$SOURCE_SHA  $WORK/source.osm.pbf" | sha256sum --check
+          sha256sum "$WORK/source.osm.pbf" > "$WORK/source.sha256"
+      - name: Build fresh disposable PostgreSQL 16 database, import Berlin once
+        run: |
+          set -euo pipefail
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          initdb -D "$WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust \
+            > "$WORK/initdb.log"
+          pg_ctl -D "$WORK/pgdata" -l "$WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT \
+                -c shared_buffers=96MB -c work_mem=8MB -c maintenance_work_mem=64MB \
+                -c max_parallel_maintenance_workers=0 -c max_parallel_workers_per_gather=0 \
+                -c jit=off -c fsync=on" start
+          createdb gis
+          psql -X -v ON_ERROR_STOP=1 -c \
+            "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+          start=$SECONDS
+          osm2pgsql --slim --drop --cache=384 --number-processes=1 \
+            --disable-parallel-indexing -O flex -S vector/vector-flex.lua \
+            -d gis "$WORK/source.osm.pbf" > "$WORK/import.log" 2>&1
+          psql -X -v ON_ERROR_STOP=1 -f vector/post-import.sql \
+            > "$WORK/derived.log" 2>&1
+          echo "$((SECONDS-start))" > "$WORK/import-plus-derived-seconds.txt"
+      - name: Compare 3 paired full Berlin exporters on identical source DB
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 benchmarks/berlin_pool_chunksize_ab.py \
+            --pbf "$WORK/source.osm.pbf" \
+            --output "$WORK/berlin-chunksize-ab.json" \
+            > "$WORK/chunksize.log" 2>&1 || {
+              tail -n 160 "$WORK/chunksize.log"
+              exit 1
+            }
+          tail -n 50 "$WORK/chunksize.log"
+          /usr/bin/python3 - "$WORK/berlin-chunksize-ab.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status'] in ('PROMISING_EXPLORATORY_GAIN','NO_MEANINGFUL_GAIN')
+          assert len(d['pairs'])==3
+          assert all(p['parity']['rows']==12047 and
+                     p['parity']['gzip_payload_mismatches']==0 for p in d['pairs'])
+          print('BERLIN_FULL_AB',d['medians_s'],d['speedup_pct'],d['status'])
+          PY
+      - name: Stop disposable PostGIS
+        if: always()
+        run: |
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          if [[ -f "$WORK/pgdata/PG_VERSION" ]]; then
+            pg_ctl -D "$WORK/pgdata" -m immediate -w stop || true
+          fi
+      - name: Retain evidence only, no PBF, database, or raw tile archives
+        if: always()
+        run: |
+          mkdir -p evidence
+          for f in versions.txt source.sha256 import-plus-derived-seconds.txt \
+            initdb.log import.log derived.log chunksize.log \
+            berlin-chunksize-ab.json postgres.log; do
+            cp "$WORK/$f" evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: berlin-pool-chunksize-ab-evidence
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: warn
