@@ -19,6 +19,7 @@ import time
 
 BASE_SHA = "a29c9b9fd18ee4e85a8e9b08cb21ea51ab004024"
 PROFILES = {"safe": (1, 256), "cache384": (1, 384),
+            "cache512": (1, 512), "cache1024": (1, 1024),
             "workers2": (2, 256), "both": (2, 384)}
 REGIONS = {"monaco": ((7.41, 43.72, 7.44, 43.75), (7.425, 43.735)),
            "kanto": ((139.745, 35.675, 139.77, 35.70), (139.750, 35.680))}
@@ -138,7 +139,7 @@ def process_memory(root_pid, importer_pid):
     try:
         cg = round(int(Path("/sys/fs/cgroup/memory.current").read_text())/1048576, 1)
     except (OSError, ValueError):
-        cg = -1
+        cg = None
     return {"postgres_rss_sum_mb": rss(pg), "importer_rss_sum_mb": rss(importer),
             "cgroup_memory_mb": cg, "pg_processes": len(pg),
             "importer_processes": len(importer)}
@@ -152,12 +153,14 @@ def measured_command(argv, log, pg_pid):
         output.flush()
         p = subprocess.Popen([str(x) for x in argv], stdout=output, stderr=subprocess.STDOUT)
         max_values = {x: 0 for x in (
-            "postgres_rss_sum_mb", "importer_rss_sum_mb", "cgroup_memory_mb",
+            "postgres_rss_sum_mb", "importer_rss_sum_mb",
             "pg_processes", "importer_processes")}
+        max_values["cgroup_memory_mb"] = None
         while p.poll() is None:
             sample = process_memory(pg_pid, p.pid)
             for k, v in sample.items():
-                max_values[k] = max(max_values[k], v)
+                if v is not None:
+                    max_values[k] = max(max_values[k] or 0, v)
             time.sleep(0.5)
         code = p.wait()
     end_oom = oom_events()
@@ -265,14 +268,16 @@ def audit_main():
     p.add_argument("--work", type=Path, required=True)
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--profiles", default="safe,cache384,workers2,both")
+    p.add_argument("--verify-profile", default="both",
+                   help="Profile to exercise through OSC append and independent final rebuild")
     p.add_argument("--independent-rebuild", action="store_true")
     args = p.parse_args()
     profiles = args.profiles.split(",")
     if args.repeats not in (1,2,3) or "safe" not in profiles or (
         any(x not in PROFILES for x in profiles) or len(profiles)!=len(set(profiles))):
         raise RuntimeError("Invalid experiment scope")
-    if args.independent_rebuild and "both" not in profiles:
-        raise RuntimeError("Independent OSC validation requires combined candidate")
+    if args.independent_rebuild and args.verify_profile not in profiles:
+        raise RuntimeError("Independent OSC validation requires selected verify profile")
     work = args.work.resolve()
     if not str(os.environ.get("PGHOST","")).startswith("/tmp/osm2mbtiles-onefactor-") or (
         os.environ.get("PGDATABASE") != "gis"):
@@ -285,6 +290,7 @@ def audit_main():
     pbf = args.pbf.resolve()
     output = work/"onefactor-results.json"
     report = {"status":"RUNNING", "source_commit": BASE_SHA, "pbf_sha256":digest_file(pbf),
+              "selected_profiles": profiles, "osc_verification_profile": args.verify_profile,
               "region":args.region, "bbox":bbox, "zooms":ZOOMS, "trial_results":[],
               "execution_order":[], "adopt_production":False,
               "notes":["same runner and PBF for all trials; no production code modified",
@@ -352,6 +358,8 @@ def audit_main():
                 trial["comparison"]=compare(ref_signature,trial["archive"])
                 if trial["counts"]!=ref_counts or not trial["comparison"]["semantic_equal"]:
                     raise RuntimeError("Mismatch across source tables or all decoded tile features")
+                if trial["comparison"]["gzip_mismatched"]:
+                    raise RuntimeError("Initial MVT gzip byte parity mismatch vs first fresh DB")
                 trial["status"]="PASS"
                 save()
                 print("IMPORT_ONEFACTOR_TRIAL",json.dumps({
@@ -362,7 +370,7 @@ def audit_main():
                     "tile_count":len(trial["archive"]["tiles"]),
                     "features":trial["archive"]["features"],
                     "gzip_mismatch_vs_first":trial["comparison"]["gzip_mismatched"]}),flush=True)
-                if args.independent_rebuild and profile=="both" and rep==args.repeats-1:
+                if args.independent_rebuild and profile==args.verify_profile and rep==args.repeats-1:
                     selected_archive=archive
                     report["osc"]=validate_osc(inc,archive,pbf,work,location)
                     save()
@@ -416,7 +424,13 @@ def audit_main():
         summaries[profile]={"all_import_plus_derived_s":times,
                             "median_s":statistics.median(times),
                             "max_sampled_cgroup_mb":max(
-                                r["phases"]["import"]["peaks"]["cgroup_memory_mb"] for r in rows)}
+                                (r["phases"]["import"]["peaks"]["cgroup_memory_mb"]
+                                 for r in rows if r["phases"]["import"]["peaks"]["cgroup_memory_mb"] is not None),
+                                default=None),
+                            "max_importer_rss_mb":max(
+                                r["phases"]["import"]["peaks"]["importer_rss_sum_mb"] for r in rows),
+                            "max_postgres_rss_sum_mb":max(
+                                r["phases"]["import"]["peaks"]["postgres_rss_sum_mb"] for r in rows)}
     safe=summaries["safe"]["median_s"]
     for p,stats in summaries.items():
         stats["observed_speedup_pct_vs_safe"]=round(100*(safe-stats["median_s"])/safe,2)

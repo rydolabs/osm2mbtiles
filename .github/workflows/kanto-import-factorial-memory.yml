@@ -1,4 +1,4 @@
-name: Kanto PostGIS import factors, memory and incremental safety
+name: Kanto PostGIS cache sweep 256-1024 MB and incremental safety
 
 on:
   push:
@@ -69,7 +69,7 @@ jobs:
           chmod 0700 "$WORK" "$PGHOST"
           osm2pgsql --version > "$WORK/osm2pgsql-version.txt"
           cat /sys/fs/cgroup/memory.max > "$WORK/cgroup-memory-limit.txt" || true
-      - name: Download OSM PBF once per runner for all four settings
+      - name: Download OSM PBF once per runner for four cache settings
         shell: bash
         run: |
           set -euo pipefail
@@ -94,7 +94,7 @@ jobs:
                 -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB \
                 -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0 \
                 -c max_parallel_workers_per_gather=0 -c jit=off -c fsync=on" start
-      - name: Complete import factor matrix, all-tile parity, append and full rebuild
+      - name: Compare 256 384 512 1024 MB at one worker, all-tile and OSC parity
         shell: bash
         run: |
           set -euo pipefail
@@ -103,6 +103,8 @@ jobs:
           /usr/bin/python3 benchmarks/kanto_import_factorial.py \
             --region "$REGION" --pbf "$WORK/source.osm.pbf" \
             --work "$WORK" --repeats "$REPEATS" \
+            --profiles safe,cache384,cache512,cache1024 \
+            --verify-profile cache1024 \
             --independent-rebuild > "$WORK/onefactor-run.log" 2>&1 || {
               tail -n 150 "$WORK/onefactor-run.log"
               df -h "$WORK"
@@ -114,10 +116,14 @@ jobs:
           d=json.load(open(sys.argv[1]))
           assert d["status"]=="PASS_EXPERIMENT_NOT_APPROVED"
           assert all(x["comparison"]["semantic_equal"] for x in d["trial_results"])
+          assert all(x["comparison"]["gzip_mismatched"] == 0 for x in d["trial_results"])
           assert d["osc"]["independent_rebuild_parity"]["semantic_equal"]
+          assert d["selected_profiles"] == ["safe","cache384","cache512","cache1024"]
+          assert d["osc_verification_profile"] == "cache1024"
           for profile, stats in d["timings"].items():
               print(profile, "median_s", round(stats["median_s"],2),
                     "cgroup_peak_MB", stats["max_sampled_cgroup_mb"],
+                    "max_importer_rss_MB", stats["max_importer_rss_mb"],
                     "observed_pct", stats["observed_speedup_pct_vs_safe"])
           PY
           df -h "$WORK"
@@ -145,7 +151,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: onefactor-${{ matrix.region }}-evidence
+          name: cache-sweep-${{ matrix.region }}-evidence
           path: evidence/
           retention-days: 14
           if-no-files-found: warn

@@ -35,5 +35,7 @@ def test_xyz_and_metadata_mismatch_fails():
 def test_one_factor_profiles():
     assert audit.PROFILES["safe"] == (1, 256)
     assert audit.PROFILES["cache384"] == (1, 384)
+    assert audit.PROFILES["cache512"] == (1, 512)
+    assert audit.PROFILES["cache1024"] == (1, 1024)
     assert audit.PROFILES["workers2"] == (2, 256)
     assert audit.PROFILES["both"] == (2, 384)
