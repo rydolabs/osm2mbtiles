@@ -110,6 +110,24 @@ are still needed.
 
 ## Vector layers and updates
 
+**Import cache note:** All normal `convert` imports (raster/vector/both)
+and persistent incremental `init`/`append` now omit `osm2pgsql --cache`,
+using the installed osm2pgsql default (800 MB in the documented version).
+The cache is not an overall process RAM limit; leave room for PostgreSQL.
+On memory-constrained WSL hosts the default can cause OOM; users should
+check available RAM and swap before large builds.
+
+**Existing persistent incremental databases:** The updater checks a fingerprint
+which includes its Python source file. Changing the cache arguments therefore
+changes that fingerprint. Databases initialized by an earlier version will
+**refuse append/flush** after upgrading; a new persistent DB and initial MBTiles
+must be created before resuming updates. Back up original data and preserve
+unapplied .osc.gz diffs; do not blindly retry a possibly-applied diff.
+Ordinary convert workdirs may reuse already-imported tables, so this cache
+change only takes effect when a new import actually runs.
+See [osm2pgsql caching](https://osm2pgsql.org/doc/manual.html#caching).
+
+
 Vector layers include `road`, `pathway`, `railway`, `building`, `building_part`, `poi`, `water`, `landcover`, `landuse`, `boundary`, and `boundary_legal`. The last two intentionally separate administrative relation lines from legal way boundaries. The `landcover` filter includes `natural=rock`; these refinements were validated with a [real Seoul tile in CI](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686).
 
 Experimental **vector-only** incremental updates support OSM `.osc.gz` changes with a specially initialized **slim PostGIS database** (ordinary `convert` databases are not append-ready):

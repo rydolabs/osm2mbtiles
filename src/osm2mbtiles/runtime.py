@@ -188,8 +188,10 @@ class LocalDatabase:
         # and removes it afterward; index creation is serial to cap peak RAM.
         # Tradeoff: more disk writes and possibly longer imports, but fewer
         # abrupt PostgreSQL OOM terminations.
+        # Node caching uses the installed osm2pgsql default (documented as 800MB).
+        # This is not a process-wide RAM cap; PostgreSQL also consumes memory.
         import_cmd = [self.runtime.bin('osm2pgsql'), '--slim', '--drop',
-                      '--cache=256', '--number-processes=1',
+                      '--number-processes=1',
                       '--disable-parallel-indexing', '-O', 'flex', '-S',
                       style/'openstreetmap-carto-flex.lua', '-d', 'gis', pbf]
         try:
@@ -238,7 +240,7 @@ class LocalDatabase:
         self.psql('-c', 'CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS hstore;')
         script = self.work/'combined-carto-vector-flex.lua'
         script.write_text(combined, encoding='utf-8')
-        command = [self.runtime.bin('osm2pgsql'), '--slim', '--drop', '--cache=256']
+        command = [self.runtime.bin('osm2pgsql'), '--slim', '--drop']
         if profile == 'fast':
             command += ['--number-processes=4']
         else:
@@ -273,8 +275,7 @@ class LocalDatabase:
         if profile not in ('safe', 'fast'):
             raise PipelineError('Vector import profile must be safe or fast')
         style = vector_dir / 'vector-flex.lua'
-        command = [self.runtime.bin('osm2pgsql'), '--slim', '--drop',
-                   '--cache=256']
+        command = [self.runtime.bin('osm2pgsql'), '--slim', '--drop']
         if profile == 'fast':
             # Benchmarked on Seoul 2026-10-28. Only opt in on sufficiently
             # provisioned machines: parallel indexers can increase PostgreSQL

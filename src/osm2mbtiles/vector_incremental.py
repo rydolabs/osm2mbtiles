@@ -140,7 +140,7 @@ def init(pbf: Path, output: Path, bbox, lo: int, hi: int, processes: int = 2):
             if style.exists():
                 raise RuntimeError("Refusing to overwrite existing flex style")
             style.write_text(configured_style(lo, hi), encoding="utf-8")
-            _run(["osm2pgsql", "--slim", "--cache=256",
+            _run(["osm2pgsql", "--slim",
                   "--number-processes=1", "--disable-parallel-indexing",
                   "-O", "flex", "-S", style, "-d",
                   os.environ.get("PGDATABASE", "gis"), pbf])
@@ -188,7 +188,7 @@ def append(diff: Path, output: Path, *, flush: bool = True):
             # Durable marker written BEFORE invoking an external importer.
             _update_phase(db, "applying", sha)
             try:
-                _run(["osm2pgsql", "--append", "--slim", "--cache=256",
+                _run(["osm2pgsql", "--append", "--slim",
                       "--number-processes=1", "-O", "flex", "-S", style,
                       "-d", os.environ.get("PGDATABASE", "gis"), diff])
                 # Derived polygon POI/housenumber labels must reflect current areas.
