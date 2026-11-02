@@ -1,0 +1,49 @@
+{
+  "pbf_sha256": "51d3845df2e4b1334ebec7cf6516e41e71735ce2fc1c0975c52d57f58f1952ad",
+  "requested_tile_xyz": [
+    14,
+    8802,
+    5373
+  ],
+  "original_gzip_sha256": "2b4dc3d73670297cc55aa87fbd058fc1ec8f03de2364eecead1e9766133a7e06",
+  "updated_gzip_sha256": "511072ea78c51bdb5c6c4583ddb7bca02c479a09f92a9123bc2ee7e0e3073fdc",
+  "demo_added_node_id": "9876543210123",
+  "demo_added_node_name": "osm2mbtiles README demo cafe",
+  "incremental_change": "synthetic .osc.gz applied using osm2pgsql --append",
+  "proven_new_poi_count": 1,
+  "raster_style": "none; simple Python Pillow visualization of decoded MVT, NOT Mapnik Carto",
+  "original_features": {
+    "water": 13,
+    "waterway": 19,
+    "landcover": 141,
+    "landuse": 409,
+    "boundary": 4,
+    "road": 1295,
+    "pathway": 2084,
+    "railway": 239,
+    "building": 765,
+    "building_part": 472,
+    "leisure": 105,
+    "place": 11,
+    "poi": 2875,
+    "transport": 152,
+    "power": 6
+  },
+  "updated_features": {
+    "water": 13,
+    "waterway": 19,
+    "landcover": 141,
+    "landuse": 409,
+    "boundary": 4,
+    "road": 1295,
+    "pathway": 2084,
+    "railway": 239,
+    "building": 765,
+    "building_part": 472,
+    "leisure": 105,
+    "place": 11,
+    "poi": 2876,
+    "transport": 152,
+    "power": 6
+  }
+}
