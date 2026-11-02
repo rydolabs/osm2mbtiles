@@ -1,7 +1,9 @@
 """A/B partial index profile never claims whole-export speedups."""
 import importlib.util
 from pathlib import Path
+import sys
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/"benchmarks"))
 spec=importlib.util.spec_from_file_location("berlin_partial_index_ab",
     ROOT/"benchmarks/berlin_partial_index_ab.py")
 mod=importlib.util.module_from_spec(spec)
