@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only Berlin PostGIS SQL diagnostics and prepared-statement A/B pilot.
+"""Read-only Berlin PostGIS SQL diagnostics and custom-plan PREPARE A/B pilot.
 
 Only benchmark-side functions differ. Both modes call exactly the frozen
 vector.query_for_zoom(z, projected=True), same source DB, MVT parameters,
@@ -46,6 +46,12 @@ def prepared_sql(z: int) -> str:
 def init_prepared():
     global _prepared
     vector.init_worker()
+    # The default PREPARE switches to generic plans after repeated EXECUTE.
+    # That changed 276/992 compressed MVT tile bytes in the prior Berlin pilot.
+    # Force per-parameter custom plans so we can test parse reuse separately
+    # from changes to physical row scan / MVT feature ordering.
+    with vector._conn.cursor() as cur:
+        cur.execute("SET plan_cache_mode = force_custom_plan")
     _prepared = set()
 
 
@@ -239,7 +245,7 @@ def main():
             "bbox":list(BBOX),"zoom":[LO,HI],"tile_workers":args.workers,
             "planned_xyz":vector.tile_count(BBOX,LO,HI),
             "status":"RUNNING","sql_plans":[],"pilot":[],"full":[],
-            "adopt_production":False}
+            "adopt_production":False,"prepared_plan_mode":"force_custom_plan"}
     def save():
         (work/"sql-probe.json").write_text(json.dumps(report,indent=2)+"\n")
     save()
