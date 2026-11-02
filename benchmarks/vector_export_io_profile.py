@@ -23,7 +23,10 @@ import time
 from osm2mbtiles import vector
 
 BBOX = {
-    "monaco": (7.41, 43.72, 7.44, 43.75),
+    # Berlin covers a realistic city-wide dataset. The stress bbox is deliberately
+    # much larger than the former Monaco smoke area; the full Berlin PBF is imported.
+    "berlin-stress": (13.088, 52.338, 13.761, 52.676),
+    # Already measured on the previous PR head; kept for manual replay, not rerun.
     "kanto": (139.55, 35.55, 139.95, 35.85),
 }
 PROFILES = ("legacy", "worker-gzip", "worker-gzip-batch")
@@ -193,13 +196,19 @@ def main():
     if os.environ.get("OSM2MBTILES_VECTOR_QUERY_MODE")!="projected":
         raise RuntimeError("Must use identical projected SQL for each profile")
     work=args.work.resolve()
+    planned_xyz = vector.tile_count(BBOX[args.region], ZLO, ZHI)
+    # A tiny extract can validate code correctness, but not meaningful throughput.
+    if args.region == "berlin-stress" and planned_xyz < 10000:
+        raise RuntimeError("Berlin stress test must cover at least 10,000 XYZ cells")
     if not (work/"pgdata"/"postmaster.pid").is_file():
         raise RuntimeError("Disposable PostgreSQL server is missing")
     work.mkdir(parents=True,exist_ok=True)
     report={"status":"RUNNING","production_sha":PRODUCTION_SHA,
             "pbf_sha256":hash_file(args.pbf),
             "region":args.region,"bbox":BBOX[args.region],
-            "zooms":[ZLO,ZHI],"workers":args.workers,"repeats":args.repeats,
+            "zooms":[ZLO,ZHI],"planned_xyz":planned_xyz,
+            "source_pbf_size_bytes":args.pbf.stat().st_size,
+            "workers":args.workers,"repeats":args.repeats,
             "profile_order":[],"trials":[],"comparisons":[],
             "adopt_production":False,
             "notes":["same DB and full PBF source across profiles",

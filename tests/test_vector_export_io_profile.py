@@ -51,3 +51,10 @@ def test_render_compressed_delegates_to_original_sql_and_uses_same_gzip(monkeypa
     assert calls==[task] and got[:3]==task
     assert got[3]==gzip.compress(b"mock MVT payload",compresslevel=6,mtime=0)
     assert got[4]>=0 and got[5]>=0
+
+
+def test_berlin_stress_replaces_tiny_monaco_performance_scope():
+    assert "monaco" not in probe.BBOX
+    assert "berlin-stress" in probe.BBOX
+    assert probe.vector.tile_count(probe.BBOX["berlin-stress"],
+                                   probe.ZLO, probe.ZHI) >= 10000

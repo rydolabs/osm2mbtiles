@@ -1,4 +1,4 @@
-name: Frozen PostGIS vector export I/O optimization and byte-parity audit
+name: Berlin full-region stress vector export I/O and gzip byte-parity
 
 on:
   push:
@@ -32,10 +32,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Previous head separately ran Monaco and Kanto. Avoid paying for a
+        # duplicate Kanto DB import; this push specifically upgrades the tiny
+        # Monaco smoke to Berlin city-wide stress with repeated full exports.
         include:
-          - region: monaco
-            repeats: 1
-          - region: kanto
+          - region: berlin-stress
             repeats: 3
     env:
       REGION: ${{ matrix.region }}
@@ -73,10 +74,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$REGION" == kanto ]]; then
-            url="https://download.geofabrik.de/asia/japan/kanto-latest.osm.pbf"
+          if [[ "$REGION" == berlin-stress ]]; then
+            # Frozen 2026-10-01 Berlin extract, not a moving 'latest' URL.
+            url="https://download.geofabrik.de/europe/germany/berlin-261001.osm.pbf"
           else
-            url="https://download.geofabrik.de/europe/monaco-latest.osm.pbf"
+            echo "Unexpected benchmark region: $REGION" >&2
+            exit 2
           fi
           echo "$url" > "$WORK/source-url.txt"
           curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 \
@@ -118,7 +121,7 @@ jobs:
             }
           echo "$((SECONDS - start))" > "$WORK/import-plus-derived-seconds.txt"
           df -h "$WORK"
-      - name: Same DB three-run complete Tokyo 6355-tile strict gzip A/B
+      - name: Three repeated full Berlin 16943-XYZ exports with strict gzip byte parity
         shell: bash
         run: |
           set -euo pipefail
@@ -138,6 +141,8 @@ jobs:
           x=json.load(open(sys.argv[1]))
           assert x["status"]=="PASS_EXPLORATORY_ONLY", x["status"]
           assert len(x["trials"])==3*x["repeats"]
+          assert x["region"]=="berlin-stress" and x["planned_xyz"]>=10000
+          assert x["source_pbf_size_bytes"] > 50 * 1024 * 1024
           assert all(c["exact_gzip_and_xyz"] for c in x["comparisons"])
           for name,row in x["timings"].items():
               print(name,"median tile-export seconds",row["median_s"],
