@@ -73,6 +73,20 @@ Vector 엔진: `--vector-tiler postgis|batch` (기본 postgis), Raster 인코딩
 
 ## .osc.gz 증분 업데이트 (Vector만, 실험용)
 
+**osm2pgsql 캐시:** raster/vector/both 일반 변환 및 증분 모드의
+초기 적재·append에서 `--cache=256`을 제거했습니다. 설치된
+`osm2pgsql`의 기본 Node 캐시(문서상 800MB)가 사용되며,
+프로그램 전체 메모리 상한은 아닙니다. WSL이나 RAM이 작은 환경에서는
+PostgreSQL 메모리도 함께 고려해야 합니다.
+
+**기존 영속 증분 DB 주의:** 증분 업데이트는 Python 파일 해시를
+검증합니다. 이번 변경 이후 예전 버전에서 생성한 영속 DB는
+append/flush를 **거부하며 새로 초기화해야 합니다**. 기존 DB·MBTiles
+백업 및 미적용 `.osc.gz` 파일 보존이 필요합니다. 확실치 않은 diff를
+무조건 재적용하지 마세요. 일반 convert의 캐시된 DB는 이미 적재된 경우
+재사용되므로 새 캐시 설정은 재적재 시에만 적용됩니다.
+
+
 일반 `convert`의 `--slim --drop` 데이터베이스에는 append할 수 없습니다. **전용 PostGIS DB를 처음부터 새로 생성**하고 osm2pgsql middle 데이터를 보존해야 합니다. 아래 예시는 실행 가능한 별도 PostgreSQL 접속 환경이 준비되었다는 전제입니다.
 
 ```bash

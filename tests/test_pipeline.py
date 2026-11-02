@@ -78,6 +78,7 @@ def test_full_mocked_pipeline(tmp_path,monkeypatch):
     recorded=log.read_text()
     assert recorded.count('initdb ')==1
     assert recorded.count('osm2pgsql ')==1
+    assert '--cache' not in recorded
     assert recorded.count('pg_ctl ')==2
     assert not out.with_name(out.name+'.partial').exists()
     # The same PBF and DB should skip the import, but generate an additional final file.

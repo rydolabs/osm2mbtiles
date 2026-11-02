@@ -19,7 +19,9 @@ def test_shared_import_single_osm2pgsql_and_both_postprocess(monkeypatch,tmp_pat
     combined=(db.work/'combined-carto-vector-flex.lua').read_text()
     assert 'carto_node(o)' in combined and 'vector_node(o)' in combined
     assert '--disable-parallel-indexing' in commands[-1]
+    assert not any(a.startswith('--cache') or a == '-C' for a in commands[-1])
     commands.clear()
     db.import_shared_extract(tmp_path/'input.pbf',style,vector,'fast')
     assert '--number-processes=4' in commands[-1]
+    assert not any(a.startswith('--cache') or a == '-C' for a in commands[-1])
     assert 'cluster = "no"' in (db.work/'combined-carto-vector-flex.lua').read_text()

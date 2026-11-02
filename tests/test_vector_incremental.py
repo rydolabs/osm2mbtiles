@@ -44,3 +44,25 @@ def test_incremental_fingerprint_tracks_vector_query_source():
     assert p.is_file()
     assert inc.style_digest()
     assert "with_name('vector.py')" in Path(inc.__file__).read_text()
+
+def test_import_and_append_use_native_osm2pgsql_cache_default():
+    import ast
+    tree = ast.parse(Path(v.__file__).read_text(encoding="utf-8"))
+    methods = {node.name: node for node in tree.body
+               if isinstance(node, ast.FunctionDef)}
+    for name in ("init", "append"):
+        calls = [node for node in ast.walk(methods[name])
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                 and node.func.id == "_run"]
+        importer = [node for node in calls if node.args
+                    and isinstance(node.args[0], ast.List)
+                    and node.args[0].elts
+                    and isinstance(node.args[0].elts[0], ast.Constant)
+                    and node.args[0].elts[0].value == "osm2pgsql"]
+        assert len(importer) == 1
+        flags = [e.value for e in importer[0].args[0].elts
+                 if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        assert "--slim" in flags
+        assert "--number-processes=1" in flags
+        assert not any(flag == "-C" or flag.startswith("--cache") for flag in flags)
+        assert ("--append" in flags) == (name == "append")
