@@ -99,19 +99,24 @@ jobs:
           /usr/bin/python3 - "$WORK/berlin-inline-attr-ab.json" <<'PY'
           import json,sys
           a=json.load(open(sys.argv[1]))
-          assert a['status'] in ('STOP_SAMPLE_GATE','NO_END_TO_END_GAIN_PROVEN',
+          assert a['status'] in ('STOP_PRECACHE_BYTE_GATE','STOP_SAMPLE_GATE',
+                                 'NO_END_TO_END_GAIN_PROVEN',
                                  'PROMISING_WARM_AND_NET'),a['status']
           assert len(a['cache_build']['tables'])==5
           assert a['cache_build']['total_seconds']>0
-          assert len(a['sample']['trials'])==3
-          if a['status']!='STOP_SAMPLE_GATE':
-              assert len(a['full_ab']['pairs'])==3
-              assert all(x['parity']['rows']==12047 and
-                         x['parity']['gzip_payload_mismatches']==0
-                         for x in a['full_ab']['pairs'])
+          assert a['precache_byte_gate']['xyz_checked']==25
+          if a['status']!='STOP_PRECACHE_BYTE_GATE':
+              assert a['precache_byte_gate']['baseline_raw_mvt_mismatches']==0
+              assert len(a['sample']['trials'])==3
+              if a['status']!='STOP_SAMPLE_GATE':
+                  assert len(a['full_ab']['pairs'])==3
+                  assert all(x['parity']['rows']==12047 and
+                             x['parity']['gzip_payload_mismatches']==0
+                             for x in a['full_ab']['pairs'])
           print('BERLIN_INLINE_ATTR_CACHE_RESULT',a['status'],
                 'build_seconds',a['cache_build']['total_seconds'],
-                'sample_speedup_pct',a['sample']['speedup_pct'],
+                'precache_byte_mismatches',a['precache_byte_gate']['baseline_raw_mvt_mismatches'],
+                'sample_speedup_pct',a.get('sample',{}).get('speedup_pct'),
                 'full',a.get('full_ab',{}).get('medians_s'))
           PY
       - name: Stop disposable PostGIS
