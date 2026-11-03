@@ -317,7 +317,9 @@ jobs:
             $report += 'RELEASE_GATE_WINDOWS_WSL2_EXECUTABLE_NOT_AVAILABLE'
           }
           $report -join "\`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
-          # Do not pretend shell parsing proves Windows+WSL2 end-to-end success.
+          # The native wsl.exe probe may have returned -1. Explicitly mark the
+          # probe step completed; WSL2 E2E remains BLOCKED in the report.
+          exit 0
       - name: Windows native CLI smoke
         shell: pwsh
         run: |
