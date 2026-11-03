@@ -293,12 +293,15 @@ def export(pbf, out: Path, bbox, lo: int, hi: int, processes: int):
     start = time.monotonic()
     seen = written = 0
     print(f'[VECTOR] total XYZ tiles={total:,}, zoom={lo}-{hi}, workers={processes}',flush=True)
+    print(f'[VECTOR] start | 0.0% | 0/{total:,} tiles | ETA --:--',flush=True)
     ctx = multiprocessing.get_context('spawn' if sys.platform == 'win32' else 'fork')
     # Spawn worker processes BEFORE opening SQLite to avoid inherited SQLite handles.
     with ctx.Pool(processes=processes, initializer=init_worker) as pool:
         with sqlite3.connect(partial) as conn:
             create_db(conn, metadata(out.stem,bbox,lo,hi))
-            pending = last_pct = 0
+            pending = 0
+            last_pct = -1
+            last_report = start
             for z, x, y, pbf_data in pool.imap_unordered(render_one, xyz_tasks(bbox,lo,hi), chunksize=1):
                 seen += 1
                 if pbf_data:
@@ -310,12 +313,22 @@ def export(pbf, out: Path, bbox, lo: int, hi: int, processes: int):
                 if pending >= 128:
                     conn.commit()
                     pending = 0
-                pct = int(seen * 100 / total) if total else 100
-                if pct >= last_pct + 5 or seen == total:
-                    rate = seen / max(0.001, time.monotonic() - start)
-                    eta = (total-seen) / rate if rate else 0
-                    print(f'[VECTOR] {pct:3d}%  {seen:,}/{total:,} tiles | nonempty={written:,} | {rate:,.1f}/s | ETA={eta/60:.1f}m', flush=True)
-                    last_pct = pct
+                now = time.monotonic()
+                pct = (seen * 100.0 / total) if total else 100.0
+                if int(pct) > last_pct or now-last_report >= 5.0 or seen == total:
+                    rate = seen / max(0.001, now - start)
+                    remaining = (total-seen)/rate if rate else None
+                    if remaining is None:
+                        eta = '--:--'
+                    else:
+                        seconds = max(0, int(remaining))
+                        eta = (f'{seconds//3600:02d}:{(seconds%3600)//60:02d}:{seconds%60:02d}'
+                               if seconds >= 3600 else
+                               f'{seconds//60:02d}:{seconds%60:02d}')
+                    print(f'[VECTOR] {pct:5.1f}% | {seen:,}/{total:,} tiles '
+                          f'| nonempty={written:,} | {rate:,.1f} tile/s | ETA {eta}',flush=True)
+                    last_pct = int(pct)
+                    last_report = now
             if seen != total:
                 raise RuntimeError(f'vector tile jobs incomplete: {seen}/{total}')
             conn.commit()
