@@ -21,6 +21,7 @@ import sys
 
 from .tiles import xyz_range, validate_bbox
 from .vector import export as full_export, query_for_zoom
+from .resources import vector_assets_dir
 
 EXPIRE_TABLE = "vector_expired_tiles"
 STATE_TABLE = "osm2mbtiles_vector_sync"
@@ -31,7 +32,7 @@ GEOM_PATTERN = re.compile(
 
 
 def source_style():
-    return Path(__file__).resolve().parents[2] / "vector" / "vector-flex.lua"
+    return vector_assets_dir() / "vector-flex.lua"
 
 
 def post_import_sql():
