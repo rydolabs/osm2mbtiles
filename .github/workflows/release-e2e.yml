@@ -324,3 +324,54 @@ jobs:
           py -3 -m pip install -e .
           py -3 -m osm2mbtiles --help
           Write-Host 'WINDOWS_HOST_PYTHON_CLI_IMPORT_PASS'
+
+  sequential-osc-diffs:
+    name: Three real OSM diffs, recovery and fresh rebuild parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostGIS, osm2pgsql and MVT decoder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql \
+            python3-psycopg2 python3-pip ca-certificates
+          /usr/bin/python3 -m pip install --break-system-packages 'mapbox-vector-tile>=2,<3'
+      - name: Real three-diff lifecycle with durable PostGIS queue
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export RELEASE_WORK="$RUNNER_TEMP/release-multidiff"
+          export PGHOST="$RELEASE_WORK/socket" PGPORT=55731 PGUSER=releasedifftest PGDATABASE=gis
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/benchmarks"
+          mkdir -p "$PGHOST"
+          initdb -D "$RELEASE_WORK/pgdata" -U "$PGUSER" --auth-local=trust --auth-host=trust
+          pg_ctl -D "$RELEASE_WORK/pgdata" -l "$RELEASE_WORK/postgres.log" -w \
+            -o "-c listen_addresses='' -c unix_socket_directories=$PGHOST -c port=$PGPORT -c shared_buffers=96MB -c work_mem=8MB -c maintenance_work_mem=64MB -c max_parallel_maintenance_workers=0" start
+          trap 'pg_ctl -D "$RELEASE_WORK/pgdata" -m immediate -w stop || true' EXIT
+          createdb gis
+          /usr/bin/python3 tests/release_multidiff_e2e.py \
+            | tee "$RELEASE_WORK/multidiff.log"
+          test -s "$RELEASE_WORK/release-sequential-diffs.json"
+      - name: Save step-by-step real diff evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p release-multidiff-evidence
+          WORK="$RUNNER_TEMP/release-multidiff"
+          for f in release-sequential-diffs.json multidiff.log postgres.log \
+                   initial.osm final.osm change.osc.gz second.osc.gz third.osc.gz; do
+            cp "$WORK/$f" release-multidiff-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-multidiff-full-rebuild-evidence
+          path: release-multidiff-evidence/
+          retention-days: 14
+          if-no-files-found: warn
