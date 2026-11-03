@@ -8,6 +8,12 @@ on:
       - 'docs/RELEASE-READINESS.md'
       - 'src/**'
       - 'pyproject.toml'
+      - 'TEST-Windows-WSL2.bat'
+      - 'tools/release_wsl2_test.ps1'
+      - 'tools/release_wsl2_verify.py'
+      - 'tools/cache_layout.sh'
+      - 'tests/test_release_wsl2_evidence.py'
+      - 'docs/WINDOWS-WSL2-RELEASE-TEST.md'
   workflow_dispatch:
 
 permissions:
@@ -406,4 +412,66 @@ jobs:
           name: release-multidiff-full-rebuild-evidence
           path: release-multidiff-evidence/
           retention-days: 14
+          if-no-files-found: warn
+
+  windows-local-zip-selftest:
+    name: Windows local release ZIP harness (archive only, NOT WSL E2E)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and test Windows QA harness success/failure ZIP paths
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $scripts=@('tools/release_wsl2_test.ps1','tools/run_windows.ps1')
+          foreach($path in $scripts) {
+            $tokens=$null;$errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path).Path,[ref]$tokens,[ref]$errors) | Out-Null
+            if($errors) { throw ($errors|Out-String) }
+          }
+          $out=Join-Path $env:GITHUB_WORKSPACE 'archive-selftest-output'
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File 'tools/release_wsl2_test.ps1' -ArchiveSelfTest -ReportRoot $out
+          if($LASTEXITCODE -ne 0) { throw 'Archive-only ZIP self-test failed.' }
+          $zips=@(Get-ChildItem -LiteralPath $out -Filter '*.zip')
+          if($zips.Count -ne 1) { throw "Expected one test ZIP, got $($zips.Count)" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive=[IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
+          try {
+            $entries=@($archive.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+            foreach($needed in @('summary.json','SUMMARY.md','evidence-sha256.txt',
+                                 'logs/sensitive-fixture.log')) {
+              if($entries -notcontains $needed) { throw "ZIP entry missing: $needed" }
+            }
+            $jsonEntry=$archive.GetEntry('summary.json')
+            $reader=New-Object IO.StreamReader($jsonEntry.Open())
+            try { $summary=$reader.ReadToEnd() | ConvertFrom-Json }
+            finally { $reader.Dispose() }
+            if($summary.result -ne 'NOT_A_REAL_WSL_TEST' -or
+               $summary.mode -ne 'archive_self_test_only') {
+              throw 'Archive-only fixture falsely claims a real WSL E2E PASS.'
+            }
+            $log=$archive.GetEntry('logs/sensitive-fixture.log')
+            $reader=New-Object IO.StreamReader($log.Open())
+            try { $sanitized=$reader.ReadToEnd() }
+            finally { $reader.Dispose() }
+            if($sanitized -match 'Alice|abc123|password=example') {
+              throw 'PII/token was not redacted in ZIP fixture.'
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File 'tools/release_wsl2_test.ps1' -ArchiveSelfTestFailure -ReportRoot $out
+          if($LASTEXITCODE -ne 1) { throw 'Simulated failure exit code was not preserved.' }
+          $zips=@(Get-ChildItem -LiteralPath $out -Filter '*.zip')
+          if($zips.Count -ne 2) { throw 'Failed run did not produce its own ZIP.' }
+          Write-Host 'WINDOWS_RELEASE_ZIP_SUCCESS_AND_FAILURE_SELFTEST_PASS'
+          Write-Host 'Important: hosted runner did not execute WSL2.'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-local-release-zip-harness-selftest
+          path: archive-selftest-output/*.zip
+          retention-days: 7
           if-no-files-found: warn
