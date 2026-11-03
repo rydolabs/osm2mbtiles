@@ -73,6 +73,22 @@ To generate **both** formats, replace `--tile-type vector` with `--tile-type bot
 
 *Real Geofabrik Berlin PBF → PostGIS → MVT → image preview. The screenshot uses a minimal preview palette to visualize decoded tile geometry; it is **not** the bundled OSM Carto raster style or a MapLibre style.*
 
+## Vector layers and feature properties
+
+The default vector exporter writes **19 named MVT layers** with OSM-derived attributes. Client styles should use the exact `source-layer` IDs below; the minimum zoom indicates when a layer becomes eligible, not that every tile contains features.
+
+| Category | Layer IDs | Example properties |
+|---|---|---|
+| Roads and transit | `road`, `pathway`, `railway`, `transport`, `aeroway` | `class`, `highway`, `surface`, `maxspeed` |
+| Water and land | `water`, `waterway`, `landcover`, `landuse`, `leisure` | `natural`, `waterway`, `landuse` |
+| Buildings and facilities | `building`, `building_part`, `aeroway_area`, `power` | `building`, `building:levels`, `height` |
+| Places and addresses | `place`, `poi`, `housenumber` | `name`, `name:ko`, `amenity`, `addr:housenumber` |
+| Boundaries | `boundary`, `boundary_legal` | `boundary`, `admin_level` |
+
+**Important:** `class` is selected from each layer's relevant OSM tags, and `osm_id` is a **generated string**, not a raw numeric OSM ID. Only selected string-valued tags are exposed: z0–12 has **20** permitted original tag keys; z13+ has **74**. Properties are sparse, and the high-zoom fields are **not all present at lower zooms**.
+
+**[Full vector layer & attribute reference →](docs/VECTOR-TILE-SCHEMA.md)** — exact minimum zooms, geometry, inclusion filters, `class` priorities, complete field lists, MapLibre source-layer example, and a copy-paste Python command to inspect real tile properties.
+
 ### Incremental vector updates
 
 Initialize a **fresh, dedicated persistent** PostGIS database once, then apply `.osc.gz` diffs. This is separate from the disposable DB used by `convert`.
