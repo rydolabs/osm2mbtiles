@@ -445,7 +445,7 @@ jobs:
               if($entries -notcontains $needed) { throw "ZIP entry missing: $needed" }
             }
             $jsonEntry=$archive.GetEntry('summary.json')
-            $reader=New-Object IO.StreamReader($jsonEntry.Open())
+            $reader=[IO.StreamReader]::new($jsonEntry.Open())
             try { $summary=$reader.ReadToEnd() | ConvertFrom-Json }
             finally { $reader.Dispose() }
             if($summary.result -ne 'NOT_A_REAL_WSL_TEST' -or
@@ -453,7 +453,7 @@ jobs:
               throw 'Archive-only fixture falsely claims a real WSL E2E PASS.'
             }
             $log=$archive.GetEntry('logs/sensitive-fixture.log')
-            $reader=New-Object IO.StreamReader($log.Open())
+            $reader=[IO.StreamReader]::new($log.Open())
             try { $sanitized=$reader.ReadToEnd() }
             finally { $reader.Dispose() }
             if($sanitized -match 'Alice|abc123|password=example') {
