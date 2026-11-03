@@ -185,6 +185,14 @@ jobs:
           python -m build
           ls -lh dist
           python -m zipfile -l dist/*.whl | tee wheel-file-list.txt
+      - name: Install native PostGIS for isolated wheel conversion
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql curl ca-certificates
       - name: Install in clean venv outside repository and verify all vector assets
         shell: bash
         run: |
@@ -210,12 +218,51 @@ jobs:
           )
           print('ISOLATED_WHEEL_VECTOR_ASSETS_OK',flush=True)
           PY
+      - name: Convert genuine Monaco PBF from isolated installed wheel (no repository Python)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP"
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          export HOME="$RUNNER_TEMP"
+          unset PYTHONPATH
+          PY="$RUNNER_TEMP/release-venv/bin/python"
+          "$PY" -m osm2mbtiles doctor --vector-only
+          curl -fLsS --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 180 \
+            https://download.geofabrik.de/europe/monaco-latest.osm.pbf \
+            -o "$RUNNER_TEMP/wheel-monaco.osm.pbf"
+          sha256sum "$RUNNER_TEMP/wheel-monaco.osm.pbf" | tee "$GITHUB_WORKSPACE/wheel-monaco.sha256"
+          "$PY" -m osm2mbtiles convert "$RUNNER_TEMP/wheel-monaco.osm.pbf" \
+            --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
+            --tile-type vector --output "$RUNNER_TEMP/wheel-monaco.mbtiles" \
+            --processes 2 | tee "$GITHUB_WORKSPACE/wheel-convert.log"
+          "$PY" -m osm2mbtiles verify-vector "$RUNNER_TEMP/wheel-monaco.mbtiles" \
+            | tee "$GITHUB_WORKSPACE/wheel-verify.log"
+          "$PY" - <<'PY'
+          from pathlib import Path
+          import os,sqlite3,gzip
+          import osm2mbtiles.cli as cli
+          import osm2mbtiles.vector_incremental as inc
+          p=Path(os.environ['RUNNER_TEMP'])/'wheel-monaco.mbtiles'
+          assert '/site-packages/' in str(Path(cli.__file__).resolve())
+          assert inc.source_style().is_file()
+          with sqlite3.connect(p) as db:
+              assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+              n=db.execute('SELECT count(*) FROM tiles').fetchone()[0]
+              assert n>0
+              row=db.execute('SELECT tile_data FROM tiles LIMIT 1').fetchone()
+              assert row is not None and len(gzip.decompress(row[0]))>0
+          print('REAL_INSTALLED_WHEEL_PBF_TO_MVT_PASS',n,p.stat().st_size,flush=True)
+          PY
       - name: Save wheel manifest
         if: always()
         run: |
           mkdir -p release-wheel-evidence
           cp wheel-file-list.txt release-wheel-evidence/ || true
           sha256sum dist/* > release-wheel-evidence/build-sha256.txt 2>/dev/null || true
+          for f in wheel-monaco.sha256 wheel-convert.log wheel-verify.log; do
+            cp "$f" release-wheel-evidence/ 2>/dev/null || true
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -246,8 +293,16 @@ jobs:
             'This job checks available WSL2 capability, not a user PC.'
           )
           if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
-            $result = & wsl.exe --list --verbose 2>&1
-            $code=$LASTEXITCODE
+            # A missing WSL distro returns nonzero and writes to stderr.
+            # That is a supported BLOCKED result, not a PowerShell parsing crash.
+            $previousPreference=$ErrorActionPreference
+            $ErrorActionPreference='Continue'
+            try {
+              $result = & wsl.exe --list --verbose 2>&1
+              $code=$LASTEXITCODE
+            } finally {
+              $ErrorActionPreference=$previousPreference
+            }
             $text=($result -join ' ')
             Write-Host "WSL2 probe exit=$code"
             Write-Host $text
