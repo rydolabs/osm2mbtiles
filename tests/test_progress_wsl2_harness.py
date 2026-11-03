@@ -47,6 +47,18 @@ def test_progress_log_accepts_real_counts_and_six_ordered_stages():
     "[RASTER]  20.0% | 2/10 tiles | 2.0 tile/s | ETA 00:04\n"
     "[RASTER]  10.0% | 1/10 tiles | 2.0 tile/s | ETA 00:04",
 ])
+def test_real_windows_log_utf16_and_utf8_compatibility(tmp_path):
+    # Windows PowerShell 5.1 Tee-Object emits UTF-16LE with BOM by default.
+    # A Linux-only test would otherwise read NUL-interleaved text as UTF-8.
+    sample=("[RASTER]  50.0% | 5/10 tiles | 4.5 tile/s | ETA 00:01\\n"
+            "[VECTOR] 100.0% | 10/10 tiles | 8.3 tile/s | ETA 00:00\\n")
+    sample=sample.replace("\\n","\\n")
+    for codec in ("utf-16", "utf-16-le", "utf-8", "utf-8-sig"):
+        path=tmp_path / (codec + ".log")
+        path.write_bytes(sample.encode(codec))
+        assert v.read_windows_log(path) == sample
+
+
 def test_release_progress_rejects_unsupported_pass_claims(bad):
     with pytest.raises(ValueError):
         v.analyze_progress(bad)
