@@ -63,6 +63,22 @@ python3 -m osm2mbtiles convert seoul.osm.pbf \
 
 Vector 엔진: `--vector-tiler postgis|batch` (기본 postgis), Raster 인코딩: `--raster-format png|png256`. 기존 옵션 `--format` / `--encoding`은 호환 별칭으로 유지합니다. 출력 파일이 존재하면 `--force`가 필요합니다.
 
+## Vector 레이어·속성 정보
+
+Vector MBTiles에는 **19개 논리 레이어**가 정의되어 있습니다. 지도 스타일에서는 `source-layer`에 아래 레이어 ID를 정확히 사용해야 합니다.
+
+| 분류 | 레이어 ID | 대표 속성 |
+|---|---|---|
+| 도로·교통 | `road`, `pathway`, `railway`, `transport`, `aeroway` | `class`, `highway`, `surface`, `maxspeed` |
+| 물·지표면 | `water`, `waterway`, `landcover`, `landuse`, `leisure` | `natural`, `waterway`, `landuse` |
+| 건물·시설 | `building`, `building_part`, `aeroway_area`, `power` | `building`, `building:levels`, `height` |
+| 장소·주소 | `place`, `poi`, `housenumber` | `name`, `name:ko`, `amenity`, `addr:housenumber` |
+| 경계 | `boundary`, `boundary_legal` | `boundary`, `admin_level` |
+
+**속성 규칙:** `class`는 각 레이어의 OSM 태그에서 우선순위에 따라 만든 값이며, `osm_id`는 **문자열 합성 식별자**입니다(원본 OSM 숫자 ID와 동일하지 않음). 줌 0~12는 원본 태그 **20개**, 줌 13 이상은 **74개**의 허용 목록을 사용하며, 원본 객체에 없는 속성은 출력되지 않습니다. 속성 예시는 모든 피처에 항상 존재한다는 뜻이 아닙니다.
+
+**[전체 Vector 레이어·속성 스키마 문서](docs/VECTOR-TILE-SCHEMA.md)** — 19개 레이어별 최소 줌·지오메트리·포함 조건, `class` 값 결정 방식, 허용 태그 전체 목록, MapLibre 스타일 적용 예제 및 실제 MBTiles 속성을 읽는 Python 예제가 있습니다.
+
 ## 지도 레이어 범위
 
 도로(`road`), 보행로(`pathway`), 철도(`railway`), 건물(`building`, `building_part`), `poi`, 물(`water`), 지표면(`landcover`), `landuse`, 행정 경계(`boundary`) 등 상세 Vector 레이어를 생성합니다. 이번 이관에서 `natural=rock`을 `landcover`에 포함했으며, `boundary=legal`은 행정 경계와 구별되는 **`boundary_legal`** 레이어(z12+)로 추가했습니다.
