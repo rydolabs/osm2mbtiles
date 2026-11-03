@@ -89,21 +89,45 @@ jobs:
           export W="$RUNNER_TEMP/real-release-maps"
           export PYTHONPATH="$GITHUB_WORKSPACE/src"
           export PATH="/usr/lib/postgresql/16/bin:$PATH"
-          # Distinct database workspaces to exercise both independent modes.
-          /usr/bin/python3 -m osm2mbtiles convert "$W/monaco.osm.pbf" \
-            --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
-            --tile-type raster --runtime "$W/runtime" \
-            --workdir "$W/raster-db" --processes 2 \
-            --output "$W/monaco-raster.mbtiles" \
-            > "$W/raster.log" 2>&1 || { tail -n 110 "$W/raster.log"; exit 1; }
+          # OSM Carto downloads some external GIS data on first import.
+          # Retry ONLY transient remote connection failures. Any SQL, importer,
+          # output or Mapnik failure remains an immediate release-gate failure.
+          convert_with_external_retry() {
+            local mode="$1" output="$2" workdir="$3" attempt log
+            for attempt in 1 2 3; do
+              log="$W/$mode.attempt-$attempt.log"
+              if /usr/bin/python3 -m osm2mbtiles convert "$W/monaco.osm.pbf" \
+                  --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
+                  --tile-type "$mode" --runtime "$W/runtime" \
+                  --workdir "$workdir" --processes 2 --force \
+                  --output "$output" > "$log" 2>&1; then
+                cp "$log" "$W/$mode.log"
+                tail -n 20 "$log"
+                return 0
+              fi
+              cp "$log" "$W/$mode.log"
+              if (( attempt < 3 )) && grep -Eq \
+                  'requests.exceptions.(ConnectionError|ReadTimeout)|RemoteDisconnected|urllib3.exceptions.ProtocolError' "$log"; then
+                echo "TRANSIENT_EXTERNAL_OSM_CARTO_DOWNLOAD_RETRY mode=$mode attempt=$attempt"
+                sleep $((attempt * 5))
+              else
+                echo "RELEASE_RASTER_CONVERT_FAILED mode=$mode attempt=$attempt" >&2
+                tail -n 140 "$log" >&2
+                return 1
+              fi
+            done
+          }
+          # Distinct database workspaces validate both true independent modes.
+          convert_with_external_retry raster "$W/monaco-raster.mbtiles" "$W/raster-db"
           /usr/bin/python3 -m osm2mbtiles verify "$W/monaco-raster.mbtiles" \
             | tee "$W/raster-verify.log"
-          /usr/bin/python3 -m osm2mbtiles convert "$W/monaco.osm.pbf" \
-            --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
-            --tile-type both --runtime "$W/runtime" \
-            --workdir "$W/both-db" --processes 2 \
-            --output "$W/monaco-both.mbtiles" \
-            > "$W/both.log" 2>&1 || { tail -n 110 "$W/both.log"; exit 1; }
+          # Reuse downloaded archive assets, but NOT imported database tables.
+          # The shared/both path will still import its own isolated PostGIS.
+          if [[ -d "$W/raster-db/style/data" ]]; then
+            mkdir -p "$W/runtime/styles/osm-carto"
+            cp -a "$W/raster-db/style/data" "$W/runtime/styles/osm-carto/"
+          fi
+          convert_with_external_retry both "$W/monaco-both.mbtiles" "$W/both-db"
           /usr/bin/python3 -m osm2mbtiles verify "$W/monaco-both.raster.mbtiles" \
             | tee "$W/both-raster-verify.log"
           /usr/bin/python3 -m osm2mbtiles verify-vector "$W/monaco-both.vector.mbtiles" \
@@ -164,6 +188,8 @@ jobs:
                    release-real-map-proof.json; do
             cp "$W/$f" release-raster-evidence/ 2>/dev/null || true
           done
+          find "$W" -maxdepth 1 -type f -name '*.attempt-*.log' \
+            -exec cp -t release-raster-evidence/ {} + 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
