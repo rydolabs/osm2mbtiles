@@ -56,14 +56,10 @@ function Write-PlainText([string]$path, [string]$value) {
 function Hide-LocalData([string]$value) {
     if (-not $value) { return '' }
     $text = $value
-    foreach ($pair in @(
-        @($run, '<LOCAL_TEST_DIR>'),
-        @($project, '<SOURCE_CHECKOUT>'),
-        @($env:USERPROFILE, '<USERPROFILE>'),
-        @($env:USERNAME, '<USER>')
-    )) {
-        if ($pair[0]) { $text = $text.Replace([string]$pair[0], [string]$pair[1]) }
-    }
+    if ($run) { $text = $text.Replace($run, '<LOCAL_TEST_DIR>') }
+    if ($project) { $text = $text.Replace($project, '<SOURCE_CHECKOUT>') }
+    if ($env:USERPROFILE) { $text = $text.Replace($env:USERPROFILE, '<USERPROFILE>') }
+    if ($env:USERNAME) { $text = $text.Replace($env:USERNAME, '<USER>') }
     $text = [regex]::Replace($text, '(?i)[A-Z]:\\Users\\[^\\\s"]+', '<USERPROFILE>')
     $text = [regex]::Replace($text, '(?i)/mnt/[a-z]/Users/[^/\s"]+', '<USERPROFILE_WSL>')
     $text = [regex]::Replace($text, '/home/[^/\s"]+', '/home/<USER>')
@@ -160,7 +156,7 @@ try {
             $items += 'OSM2MBTILES_TEST_RUN_ID'
         }
         $env:WSLENV = ($items -join ':')
-        $probe = 'set -e; . /etc/os-release; printf "DISTRO=%s VERSION=%s\n" "$ID" "$VERSION_ID"; uname -r; command -v apt-get; printf "QA_ID=%s\n" "$OSM2MBTILES_TEST_RUN_ID"'
+        $probe = 'set -e; . /etc/os-release; echo DISTRO=$ID; uname -r; command -v apt-get; echo QA_ID=$OSM2MBTILES_TEST_RUN_ID'
         $old = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
