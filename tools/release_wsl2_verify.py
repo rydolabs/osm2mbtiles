@@ -2,8 +2,8 @@
 """Read-only release evidence for actual Windows+WSL2 Raster and Vector MBTiles.
 
 Usage:
-  python3 release_wsl2_verify.py raster.mbtiles both.raster.mbtiles \
-      both.vector.mbtiles vector.mbtiles result.json preview.png
+  python3 release_wsl2_verify.py both.raster.mbtiles both.vector.mbtiles \
+      vector.mbtiles result.json preview.png
 
 Output is deliberately path-free. No PBF, database, or full MBTiles is copied
 into the result ZIP. This script never changes or removes source archives.
@@ -78,16 +78,16 @@ def describe(path: Path, required_format: str):
 
 
 def main(argv):
-    if len(argv) != 6:
+    if len(argv) != 5:
         raise SystemExit(
-            "Expected raster, both raster, both vector, vector, result.json, preview.png"
+            "Expected both raster, both vector, vector, result.json, preview.png"
         )
     *inputs, json_dest, png_dest = map(Path, argv)
     result = {"schema": "wsl2-mbtiles-evidence-v1", "passed": False,
               "outputs": [], "preview": None}
     try:
         best_preview = None
-        for file, kind in zip(inputs, ("png", "png", "pbf", "pbf")):
+        for file, kind in zip(inputs, ("png", "pbf", "pbf")):
             info, sample = describe(file, kind)
             result["outputs"].append(info)
             if sample is not None and best_preview is None:
