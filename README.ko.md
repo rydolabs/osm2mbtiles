@@ -24,7 +24,7 @@
 
 ## 빠른 시작
 
-**진행 상황 표시:** WSL 준비는 단계별로, 조용한 OSM import는 15초마다 동작 중임을 알리고, Raster·Vector 타일 생성은 실제 완료 타일 수·진행률·처리 속도·ETA를 표시합니다. 가져오기 단계에 임의의 퍼센트는 붙이지 않습니다. [표시 방식 및 한계](docs/PROGRESS-OUTPUT.md).
+**진행 상황 표시:** WSL 준비는 단계별로, 조용한 OSM import는 15초마다 동작 중임을 알리고, Raster·Vector 타일 생성은 실제 완료 타일 수·진행률·처리 속도·ETA를 표시합니다. 가져오기 단계에 임의의 퍼센트는 붙이지 않습니다. [표시 방식 및 한계](docs/PROGRESS-OUTPUT.md). **Windows 실기 검증:** [`TEST-Progress-WSL2.bat`](TEST-Progress-WSL2.bat)를 더블클릭하면 실제 Monaco 변환과 결과 ZIP 생성이 진행됩니다. [실행 가이드](docs/WINDOWS-WSL2-PROGRESS-TEST.ko.md).
 
 ### Windows + WSL2
 
