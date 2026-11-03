@@ -1,149 +1,145 @@
 # osm2mbtiles
 
-**Convert OpenStreetMap `.osm.pbf` into PNG raster MBTiles, MVT/PBF vector MBTiles, or both.**
+**OpenStreetMap PBF → Vector (MVT/PBF) and Raster (PNG) MBTiles, with OSM diff updates.**
 
-[한국어 문서 / Korean README](README.ko.md) · [Benchmark methodology](docs/BENCHMARKS.md) · [Manual tests](tests/README.md)
+[한국어 README](README.ko.md) · [Benchmarks & methodology](docs/BENCHMARKS.md) · [Tests](tests/README.md)
 
-osm2mbtiles is a **Docker-free, source-based prototype** using local PostgreSQL/PostGIS, osm2pgsql, and Mapnik/OpenStreetMap Carto. Windows users run the native tools inside **WSL2 (Ubuntu/Debian)**; no Windows-native Mapnik/PostGIS bundle is distributed.
+Turn a local **`.osm.pbf` extract** into an MBTiles archive using **osm2pgsql + PostGIS**. Export detailed vector layers, render raster tiles with Mapnik/OSM Carto, or generate both. A separate **persistent vector pipeline** can apply OSM `.osc.gz` changes without repeating the entire PBF import.
 
-> **Current maturity:** Project tests, an actual Mapnik PNG smoke render, a small real Berlin-style-independent Seoul vector run, and a synthetic `.osc.gz` update/full-rebuild check have passed CI. A complete Windows + WSL PNG-and-vector conversion across a city has not yet been certified. System dependencies, styles, fonts and external map assets must be available. This is not a prepackaged standalone executable.
+> **Source-based prototype, not a standalone binary.** Linux or WSL2 and a prepared native PostgreSQL/PostGIS, osm2pgsql, and (for raster) Mapnik/OSM Carto runtime are required. The initial vector exporter and the persistent vector incremental updater use **different database setups**. Windows runs through WSL2; native Windows binaries are not supplied.
 
-## Output formats
+## At a glance
 
-| Mode | Output | Details |
+| Input | Output | Command |
 |---|---|---|
-| `--tile-type raster` (default) | `.mbtiles` containing PNG tiles | Mapnik and OSM Carto raster rendering; `png` or `png256` |
-| `--tile-type vector` | `.mbtiles` containing gzip-compressed MVT/PBF tiles | PostGIS `ST_AsMVT` with detailed layers and feature attributes |
-| `--tile-type both` | `<name>.raster.mbtiles` and `<name>.vector.mbtiles` | Both formats from a shared OSM import path |
+| OSM `.osm.pbf` | Vector MVT/PBF `.mbtiles` | `--tile-type vector` |
+| OSM `.osm.pbf` | Raster PNG `.mbtiles` | `--tile-type raster` |
+| OSM `.osm.pbf` | Both archives | `--tile-type both` |
+| OSM `.osc.gz` | Updated **vector** MBTiles | `vector_incremental append` |
 
-The input `.osm.pbf` is **raw OSM data**; MVT/PBF inside vector MBTiles is **a different tile format**. Rendering vector tiles requires an appropriate client-side style (e.g. MapLibre).
+**OSM PBF** is the input data format; **MVT/PBF** is the vector tile payload stored inside SQLite-based **MBTiles**. The two kinds of PBF are not interchangeable. Vector tiles need a client-side map style to display as a map.
 
-## Windows (WSL2): quick start
+## How it works
 
-Prerequisites: Windows 10/11, working **WSL2 Ubuntu/Debian**, PowerShell, internet access for first-time package/style setup, disk space and RAM.
+```mermaid
+flowchart LR
+    A["OSM extract<br/>.osm.pbf"] --> B["osm2pgsql"]
+    B --> C[("PostGIS")]
+    C --> D["PostGIS ST_AsMVT"]
+    C --> E["Mapnik + OSM Carto"]
+    D --> F["Vector MBTiles<br/>gzip MVT / PBF"]
+    E --> G["Raster MBTiles<br/>PNG"]
+```
+
+`--tile-type both` uses a shared import path. The standard `convert` command normally manages its own local DB workspace; **this is not an append-ready database**.
+
+## Quick start
+
+### Windows + WSL2
+
+From a source checkout, with WSL2 Ubuntu/Debian and its runtime installed:
 
 ```bat
-REM Opens an existing OSM PBF file picker (or uses the sole local .osm.pbf)
-run.bat
-
-REM Choose an existing PBF and export MVT/PBF or both tile formats
 run.bat vector 12-14
 run.bat both 12-14
-
-REM Optional legacy region download; explicit, not the default
-run.bat south-korea
-
-REM Manual Seoul-specific smoke test (not the main launcher)
-tests\test-seoul.bat
-tests\test-seoul.bat 12-15 vector
-
-REM Windows/WSL cache maintenance
-cleanup.bat
 ```
 
-Drag a local `*.osm.pbf` file onto `run.bat` to select a different country or region; the application is **not limited to South Korea**. The selected extract may not contain an OSM `HeaderBBox`; set `OSM2MBTILES_BBOX` or pass `--bbox` explicitly in the Python CLI. `tests/test-seoul.bat` supplies a tested explicit bbox.
+The launcher selects a local `.osm.pbf` file (you can also drag a PBF onto `run.bat`). These commands are for **Command Prompt / Windows**, not a Linux shell.
 
-## Python / Linux / WSL (developer workflow)
+For the Seoul-specific manual smoke test, use `tests\test-seoul.bat` (not the default launcher).
 
-The package requires a prepared native **PostgreSQL/PostGIS + osm2pgsql + Mapnik/OSM Carto runtime** for actual conversion. `pip install` alone does **not** install those native dependencies or styles.
+### Linux / WSL: vector from PBF
+
+From the repository root, after preparing the [native runtime](#requirements):
 
 ```bash
-python3 -m pip install -e '.[test]'
-python3 -m pytest -q
+python3 -m pip install -e .
 
-# Example: Vector MVT/PBF from a frozen Geofabrik Berlin extract
-# Download once from https://download.geofabrik.de/europe/germany/berlin.html
-python3 -m osm2mbtiles convert berlin-latest.osm.pbf \
-  --bbox 13.20,52.45,13.60,52.60 --zoom 12-16 \
-  --tile-type vector --vector-tiler batch \
-  --runtime ./runtime --output berlin.mbtiles --processes 4
-
-python3 -m osm2mbtiles verify-vector berlin.mbtiles
-
-# Both output formats; requires the full Mapnik/OSM Carto runtime
-python3 -m osm2mbtiles convert berlin-latest.osm.pbf \
+python3 -m osm2mbtiles convert berlin-261001.osm.pbf \
   --bbox 13.20,52.45,13.60,52.60 --zoom 12-14 \
-  --tile-type both --raster-format png --runtime ./runtime \
+  --tile-type vector --runtime ./runtime \
   --output berlin.mbtiles
 
-python3 -m osm2mbtiles verify berlin.raster.mbtiles
-python3 -m osm2mbtiles verify-vector berlin.vector.mbtiles
-
-# Estimate tile count without importing data
-python3 -m osm2mbtiles convert berlin-latest.osm.pbf \
-  --bbox 13.20,52.45,13.60,52.60 -z 12-16 \
-  -o berlin.mbtiles --tile-type vector --dry-run
+python3 -m osm2mbtiles verify-vector berlin.mbtiles
 ```
 
-Additional flags: `--vector-tiler postgis|batch`, `--vector-query-mode projected|baseline|cached`, `--raster-format png|png256`, `--workdir` to retain a private database, and `--force` to replace existing output. `--format` and `--encoding` are compatibility aliases.
+Use a local Geofabrik [Berlin extract](https://download.geofabrik.de/europe/germany/berlin.html); it is **not downloaded automatically** by this command. The explicit `--bbox` is important when a PBF lacks an OSM header bounding box.
 
-## Reproducible, international benchmarks
+To generate **both** formats, replace `--tile-type vector` with `--tile-type both`. The output names become `berlin.raster.mbtiles` and `berlin.vector.mbtiles`. Raster rendering additionally needs the Mapnik/OSM Carto style, fonts and any external style resources.
 
-The recommended **primary** vector comparison is **Berlin, Germany**, using the official [Geofabrik Berlin PBF](https://download.geofabrik.de/europe/germany/berlin.html) and **bbox `13.20,52.45,13.60,52.60`, zoom 12–16** (4,573 possible XYZ positions, not necessarily 4,573 populated tiles).
+## See the output
 
-| Dataset | Scope | Purpose |
+![Real Berlin OSM PBF rendered from decoded PostGIS MVT tile features](docs/assets/berlin-vector-preview.png)
+
+*Real Geofabrik Berlin PBF → PostGIS → MVT → image preview. The screenshot uses a minimal preview palette to visualize decoded tile geometry; it is **not** the bundled OSM Carto raster style or a MapLibre style.*
+
+## Vector layers and feature properties
+
+The default vector exporter writes **19 named MVT layers** with OSM-derived attributes. Client styles should use the exact `source-layer` IDs below; the minimum zoom indicates when a layer becomes eligible, not that every tile contains features.
+
+| Category | Layer IDs | Example properties |
 |---|---|---|
-| **Berlin (Germany)** | z12–16, 4,573 XYZ positions | Primary `osm2mbtiles` vs `Planetiler` vs `Tilemaker` benchmark |
-| **Monaco** | small Geofabrik extract | Fast setup/compatibility smoke test, **not** a speed ranking |
-| **Seoul (South Korea)** | legacy single-tile/58-tile evidence | Regression checks and historical measurements |
+| Roads and transit | `road`, `pathway`, `railway`, `transport`, `aeroway` | `class`, `highway`, `surface`, `maxspeed` |
+| Water and land | `water`, `waterway`, `landcover`, `landuse`, `leisure` | `natural`, `waterway`, `landuse` |
+| Buildings and facilities | `building`, `building_part`, `aeroway_area`, `power` | `building`, `building:levels`, `height` |
+| Places and addresses | `place`, `poi`, `housenumber` | `name`, `name:ko`, `amenity`, `addr:housenumber` |
+| Boundaries | `boundary`, `boundary_legal` | `boundary`, `admin_level` |
 
-**No Berlin/Monaco three-engine speed results have been measured yet.** Report the **full PBF-to-MBTiles elapsed time** for all three engines under the same host, pinned PBF checksum, bbox, zoom and worker budget. For osm2mbtiles, separately report DB import and **warm PostGIS tile-only** timings. Output schemas differ; report the number of emitted tiles and features along with time and peak memory. See [benchmark protocol and historical Seoul figures](docs/BENCHMARKS.md).
+**Important:** `class` is selected from each layer's relevant OSM tags, and `osm_id` is a **generated string**, not a raw numeric OSM ID. Only selected string-valued tags are exposed: z0–12 has **20** permitted original tag keys; z13+ has **74**. Properties are sparse, and the high-zoom fields are **not all present at lower zooms**.
 
-These comparisons concern **Vector MVT/PBF only**. PNG/Mapnik rendering is a separate workload and must not be described as faster or slower than Planetiler/Tilemaker from the vector timings.
+**[Full vector layer & attribute reference →](docs/VECTOR-TILE-SCHEMA.md)** — exact minimum zooms, geometry, inclusion filters, `class` priorities, complete field lists, MapLibre source-layer example, and a copy-paste Python command to inspect real tile properties.
 
-### Incremental maintenance: two OSM snapshots (Monaco smoke)
+### Incremental vector updates
 
-The project prioritizes **retained PostGIS state and correct vector updates**, not
-a fastest-cold-converter claim. In [a single real Monaco PBF smoke run](https://github.com/rydolabs/osm2mbtiles/actions/runs/40973051076)
-(z12–16, one synthetic hospital POI change), **initial + append/flush took
-3.024 s** versus **11.137 s for two complete Planetiler v0.10.2 builds**.
-Both generated 5 changed tiles, and the updated PostGIS archive passed an
-independent full-rebuild *decoded feature parity* check.
+Initialize a **fresh, dedicated persistent** PostGIS database once, then apply `.osc.gz` diffs. This is separate from the disposable DB used by `convert`.
 
-**Not a general speed ranking:** Monaco is tiny, Planetiler and PostGIS
-produce different feature profiles (final 32,783 vs 40,164 features), the
-PostGIS server setup is excluded, and it is one synthetic change/one run.
-The old Tokyo/Kanto cold PostGIS import+export alone exceeded two observed
-Planetiler builds. Read the [two-snapshot lifecycle benchmark protocol](docs/UPDATE-LIFECYCLE-BENCHMARK.md)
-before citing any speed comparison. Larger-region, repeated update benchmarks
-are still needed.
-
-## Vector layers and updates
-
-Vector layers include `road`, `pathway`, `railway`, `building`, `building_part`, `poi`, `water`, `landcover`, `landuse`, `boundary`, and `boundary_legal`. The last two intentionally separate administrative relation lines from legal way boundaries. The `landcover` filter includes `natural=rock`; these refinements were validated with a [real Seoul tile in CI](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686).
-
-Experimental **vector-only** incremental updates support OSM `.osc.gz` changes with a specially initialized **slim PostGIS database** (ordinary `convert` databases are not append-ready):
+```mermaid
+flowchart LR
+    A["Initial .osm.pbf"] --> B["incremental init"]
+    B --> C[("Persistent PostGIS<br/>slim tables retained")]
+    C --> D["Vector MBTiles"]
+    E["Change .osc.gz"] --> F["incremental append"]
+    F --> C
+    F --> G["Expired tile coordinates"]
+    G --> H["Regenerate changed vector tiles"]
+    H --> D
+```
 
 ```bash
-# Requires a running PostGIS with appropriate PGHOST/PGPORT/PGUSER/PGDATABASE
+# Point these to an already running, dedicated PostGIS DB.
+export PGHOST=/path/to/socket PGPORT=5432 PGUSER=your_user PGDATABASE=gis
+
 python3 -m osm2mbtiles.vector_incremental init \
-  --pbf input.osm.pbf --output updated.mbtiles \
-  --bbox 13.20,52.45,13.60,52.60 --zoom 12-16
+  --pbf berlin-261001.osm.pbf --output berlin-updated.mbtiles \
+  --bbox 13.20,52.45,13.60,52.60 --zoom 12-14
 
 python3 -m osm2mbtiles.vector_incremental append \
-  --diff changes.osc.gz --output updated.mbtiles
+  --diff changes.osc.gz --output berlin-updated.mbtiles
 
-# Retry tile writes only after an already-applied diff
-python3 -m osm2mbtiles.vector_incremental flush --output updated.mbtiles
+# Only when the diff was applied but tile writing still needs recovery:
+python3 -m osm2mbtiles.vector_incremental flush \
+  --output berlin-updated.mbtiles
 ```
 
-OSM replication sequence management, automated diff downloads, large-scale production reliability and **raster PNG incremental updates** are not provided. See the [incremental parity CI](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842767385).
+![Berlin vector tile before and after applying an OSM .osc.gz diff](docs/assets/berlin-incremental-before-after.png)
 
-## Repository layout
+*The same Berlin vector tile before/after applying a **synthetic café POI** change through real osm2pgsql `--append`. This is a reproducible demonstration, not a live replication feed.*
 
-```text
-src/osm2mbtiles/     Python implementation (CLI, PNG, MVT, incremental updates)
-vector/              osm2pgsql flex Lua and PostGIS post-import SQL
-tools/               Windows + WSL runtime and cache helper scripts
-tests/               automated tests + optional Seoul manual smoke scripts
-benchmarks/          comparable-region manifests and benchmark utilities
-docs/                methodology, benchmark results and limitations
-.github/workflows/   CI, native Mapnik smoke and data correctness checks
-run.bat              Windows launcher for any local OSM PBF
-```
+The incremental path updates **vector tiles only** and retains OSM middle data so osm2pgsql can resolve changes. It does **not** include automatic replication downloads/sequence tracking, PNG incremental rendering, or guaranteed large-region unattended operation. An uncertain failed diff must **not** be blindly replayed.
 
-`vector/` and `tools/` are intentionally top-level **in this source-checkout distribution**. Note that `pip` wheel-only installs currently do **not** bundle the top-level `vector/` assets; use a repository checkout for full conversion until these assets are packaged as Python resources.
+## Requirements
 
-## License and attribution
+- **Linux or Windows WSL2** (Ubuntu/Debian); source checkout required for top-level `vector/` assets.
+- **Python 3.10+**, **PostgreSQL + PostGIS + osm2pgsql** for PBF import and vector export.
+- The current `convert` CLI validates a complete `./runtime` layout **even in vector-only mode**: native PostgreSQL tools, a Mapnik-compatible Python executable, and OSM Carto style files must be present. MVT geometry itself is still generated by PostGIS, not Mapnik.
+- **Raster PNG** additionally needs usable Mapnik/OSM Carto rendering, fonts and external style resources. `pip install` alone does not install the native runtime or styles.
 
-Project code: [MIT](LICENSE). OpenStreetMap data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), subject to the ODbL and attribution requirements. Native packages, OSM Carto styles, third-party fonts and external map datasets retain their own licenses and are not shipped in this repository.
+Verify CLI options with `python3 -m osm2mbtiles --help`, or check a native runtime with `python3 -m osm2mbtiles doctor --runtime ./runtime`.
+
+## Validation and limits
+
+The repository has GitHub Actions coverage for Python tests, real Mapnik PNG smoke rendering, and synthetic OSM diff versus independent full-rebuild feature parity. Berlin vector export benchmarks preserve pinned PBF checksums and measure cold and warm stages separately.
+
+**No generalized fastest-converter claim:** the primary comparison region is **Berlin**, while **Monaco** is a small smoke-test extract. Historical **Planetiler** and **Tilemaker** comparisons use different feature profiles; machine environments and cold/warm work also differ. See the [Berlin benchmark protocol](docs/BENCHMARKS.md), [output stability](docs/OUTPUT-STABILITY-REGRESSION.md) and [update lifecycle limitations](docs/UPDATE-LIFECYCLE-BENCHMARK.md).
+
+**Attribution:** Project [MIT](LICENSE). Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), subject to ODbL and attribution. Mapnik, OSM Carto, fonts, PostgreSQL/PostGIS and other dependencies retain their own licenses.
