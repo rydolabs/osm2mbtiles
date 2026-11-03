@@ -155,7 +155,9 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
     (work/'.osm2mbtiles-workspace').touch(exist_ok=True)
     raster = args.format in ('raster','both')
     vector = args.format in ('vector','both')
+    print('[CHECK] Hashing input PBF to validate reusable import state...',flush=True)
     pbf_digest = file_digest(pbf)
+    print('[CHECK] Input PBF hash completed.',flush=True)
     # A vector-only PBF has no Carto style. Keep its prior vector-state key
     # completely independent of the raster import/style fingerprint.
     style = work / 'style' if raster else None
@@ -201,9 +203,11 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
         file_digest(vector_dir/'post-import.sql') + '|shared-v1|' + args.vector_import_profile).encode()).hexdigest() if raster and vector else None
     shared_state = work/'shared-import-state.json'
     shared_cached = json.loads(shared_state.read_text()) if shared_state.is_file() else {}
+    print('[SETUP] Starting private PostgreSQL/PostGIS workspace...',flush=True)
     with LocalDatabase(runtime,work) as db:
+        print('[SETUP] Private PostgreSQL/PostGIS ready.',flush=True)
         if raster and vector and (shared_cached.get('key') != shared_key or previous.get('import_key') != key):
-            print('[SHARED] Importing OSM once for Carto PNG and detailed PBF...',flush=True)
+            print('[IMPORT] One shared OSM import for Carto PNG and detailed MVT...',flush=True)
             db.import_shared_extract(pbf,style,vector_dir,args.vector_import_profile)
             db.prepare_external_data(style)
             shared_state.write_text(json.dumps({'key':shared_key}),encoding='utf-8')
@@ -211,7 +215,7 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
             (work/'vector-state.json').write_text(json.dumps({'import_key':hashlib.sha256((pbf_digest+file_digest(vector_dir/'vector-flex.lua')+file_digest(vector_dir/'post-import.sql')+'|import-profile='+args.vector_import_profile).encode()).hexdigest()}),encoding='utf-8')
         if raster and not vector:
             if previous.get('import_key') != key:
-                print('Importing PBF into private PostGIS for raster...',flush=True)
+                print('[IMPORT] Raster OSM PBF → private PostGIS (duration unknown)...',flush=True)
                 db.import_extract(pbf,style)
                 db.prepare_external_data(style)
                 state_file.write_text(json.dumps({'import_key':key},indent=2),encoding='utf-8')
@@ -219,7 +223,7 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
                 (work/'vector-state.json').unlink(missing_ok=True)
                 shared_state.unlink(missing_ok=True)
             else:
-                print('Reusing prior raster import.',flush=True)
+                print('[IMPORT] Reusing existing raster import (no PBF reimport).',flush=True)
         if vector and not raster:
             vkey = hashlib.sha256((pbf_digest+file_digest(vector_dir/'vector-flex.lua')+
                      file_digest(vector_dir/'post-import.sql')+
@@ -227,11 +231,11 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
             vstate = work/'vector-state.json'
             cached = json.loads(vstate.read_text()) if vstate.is_file() else {}
             if cached.get('import_key') != vkey:
-                print('[VECTOR] Importing full OSM tags into private vector tables...',flush=True)
+                print('[IMPORT] Importing detailed OSM tags into PostGIS vector tables...',flush=True)
                 db.import_vector_extract(pbf,vector_dir,args.vector_import_profile)
                 vstate.write_text(json.dumps({'import_key':vkey},indent=2),encoding='utf-8')
             else:
-                print('[VECTOR] Reusing detailed vector import.',flush=True)
+                print('[IMPORT] Reusing existing detailed vector import.',flush=True)
         if raster and vector:
             vkey = hashlib.sha256((pbf_digest+file_digest(vector_dir/'vector-flex.lua')+file_digest(vector_dir/'post-import.sql')+'|import-profile='+args.vector_import_profile).encode()).hexdigest()
         if raster:
@@ -242,10 +246,10 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
                 Path(job['partial']).unlink()
             job_path = work/'render-job.json'
             job_path.write_text(json.dumps(job,indent=2),encoding='utf-8')
-            print('Rendering metatiles into PNG MBTiles...',flush=True)
+            print('[RASTER] Mapnik PNG rendering started; tile progress follows...',flush=True)
             run([runtime.python,worker,job_path],env=db.env,cwd=style)
             os.replace(job['partial'],raster_out)
-            print(f'DONE Raster: {raster_out} ({raster_out.stat().st_size:,} bytes)',flush=True)
+            print(f'[RASTER] DONE: {raster_out} ({raster_out.stat().st_size:,} bytes)',flush=True)
         if vector:
             # An optional on-disk property cache moves JSONB conversion from each
             # metatile query into one preparation pass over the imported OSM rows.
@@ -263,6 +267,7 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
                     print('[VECTOR] Reusing PostGIS property cache.',flush=True)
             # Invoke using the Mapnik-enabled system Python whose psycopg2 is
             # already installed by the WSL setup; vector renderer doesn't use Mapnik.
+            print('[VECTOR] PostGIS MVT tile export starting; tile progress follows...',flush=True)
             vector_script = Path(__file__).with_name('vector_worker.py')
             vector_job = work/'vector-job.json'
             vector_job.write_text(json.dumps({
@@ -272,7 +277,7 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
             vector_env=db.env.copy()
             vector_env['OSM2MBTILES_VECTOR_QUERY_MODE'] = args.vector_query_mode
             run([runtime.python,vector_script,vector_job],env=vector_env)
-            print(f'DONE Vector: {vector_out} ({vector_out.stat().st_size:,} bytes)',flush=True)
+            print(f'[VECTOR] DONE: {vector_out} ({vector_out.stat().st_size:,} bytes)',flush=True)
 
 
 def main(argv=None):
