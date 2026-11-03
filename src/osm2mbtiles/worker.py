@@ -172,7 +172,8 @@ def render(job):
         result = db.execute('PRAGMA integrity_check').fetchone()[0]
         if result != 'ok':
             raise RuntimeError('MBTiles integrity_check failed: '+result)
-        progress.update(completed, metatiles=count, force=True)
+        if progress.last_pct < 100:
+            progress.update(completed, metatiles=count, force=True)
         print(f'[RASTER] COMPLETE: {completed:,}/{total:,} tiles '
               f'| new metatiles={count:,} | elapsed={duration_text(time.monotonic()-progress.started)}',flush=True)
         print(f'COMPLETE TILES={completed}',flush=True)
