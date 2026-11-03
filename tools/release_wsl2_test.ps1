@@ -50,7 +50,7 @@ $report = [ordered]@{
 $zipExit = 1
 
 function Write-PlainText([string]$path, [string]$value) {
-    [IO.File]::WriteAllText($path, $value, (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($path, $value, ([Text.UTF8Encoding]::new($false)))
 }
 
 function Hide-LocalData([string]$value) {
@@ -275,11 +275,10 @@ try {
         $unixVector = Wsl-Path $vectorFile
         $unixReport = Wsl-Path (Join-Path $evidence 'mbtiles-proof.json')
         $unixPreview = Wsl-Path (Join-Path $evidence 'preview-raster.png')
-        # We have only one Raster PNG generated in BOTH mode. Validate it
-        # twice against the same source without claiming a separate raster run.
+        # One genuine BOTH raster and two independent vector outputs.
         $verifyCode = Run-Logged 'wsl.exe' @(
             '--exec', '/usr/bin/python3', $unixScript, $unixBothRaster,
-            $unixBothRaster, $unixBothVector, $unixVector, $unixReport, $unixPreview
+            $unixBothVector, $unixVector, $unixReport, $unixPreview
         ) (Join-Path $raw 'mbtiles-verify.log')
         if ($verifyCode -ne 0) { throw ('MBTiles verification returned exit ' + $verifyCode) }
         $proof = Get-Content -LiteralPath (Join-Path $evidence 'mbtiles-proof.json') -Raw | ConvertFrom-Json
