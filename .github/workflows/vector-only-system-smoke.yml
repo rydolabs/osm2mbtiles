@@ -1,0 +1,95 @@
+name: Real Vector-only System PostGIS Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/osm2mbtiles/runtime.py'
+      - 'src/osm2mbtiles/cli.py'
+      - 'tests/test_vector_only_runtime.py'
+      - 'pyproject.toml'
+      - '.github/workflows/vector-only-system-smoke.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/osm2mbtiles/runtime.py'
+      - 'src/osm2mbtiles/cli.py'
+      - 'tests/test_vector_only_runtime.py'
+      - 'pyproject.toml'
+      - '.github/workflows/vector-only-system-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-vector-no-mapnik:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install system PostgreSQL/PostGIS and osm2pgsql only (NO Mapnik / OSM Carto)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql curl ca-certificates
+          python -m pip install -e '.[vector,test]'
+          test ! -d runtime/styles/osm-carto
+          python -m osm2mbtiles doctor --vector-only
+          python -m pytest -q tests/test_vector_only_runtime.py
+      - name: Generate genuine Monaco MVT using convert without --runtime or Mapnik
+        shell: bash
+        run: |
+          set -euxo pipefail
+          WORK="$RUNNER_TEMP/vector-only-real"
+          mkdir -p "$WORK"
+          curl -fLsS --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 180 \
+            https://download.geofabrik.de/europe/monaco-latest.osm.pbf \
+            -o "$WORK/monaco.osm.pbf"
+          sha256sum "$WORK/monaco.osm.pbf" | tee "$WORK/source.sha256"
+          test "$(stat -c%s "$WORK/monaco.osm.pbf")" -gt 25000
+          python -m osm2mbtiles convert "$WORK/monaco.osm.pbf" \
+            --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
+            --tile-type vector --output "$WORK/monaco-vector.mbtiles" \
+            --processes 2 | tee "$WORK/convert.log"
+          python -m osm2mbtiles verify-vector "$WORK/monaco-vector.mbtiles" \
+            | tee "$WORK/verify.log"
+          python - "$WORK/monaco-vector.mbtiles" <<'PY'
+          from pathlib import Path
+          import gzip
+          import sqlite3
+          import sys
+          p=Path(sys.argv[1])
+          with sqlite3.connect(p) as db:
+              assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+              meta=dict(db.execute('SELECT name,value FROM metadata'))
+              assert meta['format']=='pbf'
+              count=db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
+              row=db.execute('SELECT tile_data FROM tiles LIMIT 1').fetchone()
+              assert count>0 and row is not None
+              assert gzip.decompress(row[0])
+              print('REAL_MONACO_VECTOR_NO_MAPNIK_OK',
+                    {'nonempty_tiles':count,'bytes':p.stat().st_size},flush=True)
+          PY
+          test ! -d runtime/styles/osm-carto
+      - name: Retain real PBF and verified output logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p vector-only-evidence
+          WORK="$RUNNER_TEMP/vector-only-real"
+          for name in source.sha256 convert.log verify.log; do
+            cp "$WORK/$name" vector-only-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vector-only-native-postgis-smoke-evidence
+          path: vector-only-evidence/
+          retention-days: 14
+          if-no-files-found: warn
