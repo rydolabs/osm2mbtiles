@@ -14,3 +14,6 @@ __pycache__/
 *.mbtiles-wal
 *.mbtiles-shm
 *.log
+
+# Never commit local Windows+WSL2 QA inputs, MBTiles, or raw logs.
+progress-test-results/
