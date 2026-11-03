@@ -10,7 +10,12 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from progress import TileProgress  # sibling of this standalone Mapnik worker
+try:
+    from osm2mbtiles.progress import TileProgress
+except ModuleNotFoundError:
+    # Bundled Mapnik interpreter may execute worker.py directly without the
+    # main Python package installed; the progress module sits next to it.
+    from progress import TileProgress
 
 TILE = 256
 HALF = 20037508.342789244
