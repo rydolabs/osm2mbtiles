@@ -20,4 +20,5 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [project.optional-dependencies]
+vector = ["psycopg2-binary>=2.9,<3"]
 test = ["pytest>=8", "Pillow>=10", "mapbox-vector-tile>=2,<3"]

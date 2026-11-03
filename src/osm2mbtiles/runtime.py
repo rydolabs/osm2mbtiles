@@ -26,13 +26,39 @@ def executable(path: Path) -> Path:
 @dataclass(frozen=True)
 class Runtime:
     root: Path
+    # Vector-only conversion needs PostGIS/osm2pgsql, not an OSM Carto style or Mapnik.
+    # Raster and combined modes deliberately retain their strict bundled-runtime contract.
+    vector_only: bool = False
 
     def bin(self, tool: str) -> Path:
-        return executable(self.root / 'bin' / tool)
+        bundled = self.root / 'bin' / tool
+        if not self.vector_only:
+            return executable(bundled)
+        if bundled.is_file():
+            return bundled
+        # Source-only vector users can use distribution PostgreSQL and osm2pgsql.
+        command = shutil.which(tool)
+        if command:
+            return Path(command)
+        # Debian/Ubuntu package initdb and pg_ctl outside PATH.
+        if tool in ('initdb', 'pg_ctl', 'createdb', 'psql'):
+            pgroot = Path('/usr/lib/postgresql')
+            candidates = sorted(pgroot.glob('*/bin/' + tool),
+                                key=lambda p: p.parent.parent.name)
+            if candidates:
+                return candidates[-1]
+        raise PipelineError(
+            f'Missing vector tool {tool}: install PostgreSQL and osm2pgsql '
+            'and make their executables available in PATH'
+        )
 
     @property
     def python(self) -> Path:
-        # mapnik Python bindings must match this interpreter; host Python isn't assumed compatible.
+        if self.vector_only:
+            # Use the Python that invoked this CLI, so .[vector] dependencies
+            # are available. Do not require Mapnik bindings for PostGIS MVT.
+            return Path(sys.executable)
+        # Mapnik Python bindings must match this interpreter.
         for path in (self.root / 'python' / 'bin' / 'python3',
                      self.root / 'python' / 'python.exe'):
             if path.exists():
@@ -50,14 +76,19 @@ class Runtime:
                 self.bin(name)
             except PipelineError:
                 missing.append(name)
-        try:
-            self.python
-        except PipelineError:
-            missing.append('python-with-mapnik')
-        for name in ('project.xml','openstreetmap-carto-flex.lua','indexes.sql',
-                     'functions.sql','common-values.sql'):
-            if not (self.style / name).is_file():
-                missing.append(f'osm-carto/{name}')
+        if self.vector_only:
+            import importlib.util
+            if importlib.util.find_spec('psycopg2') is None:
+                missing.append('Python psycopg2 (pip install -e .[vector])')
+        else:
+            try:
+                self.python
+            except PipelineError:
+                missing.append('python-with-mapnik')
+            for name in ('project.xml','openstreetmap-carto-flex.lua','indexes.sql',
+                         'functions.sql','common-values.sql'):
+                if not (self.style / name).is_file():
+                    missing.append(f'osm-carto/{name}')
         if missing:
             raise PipelineError('Native runtime incomplete: ' + ', '.join(missing))
 
