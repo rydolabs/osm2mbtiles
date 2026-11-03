@@ -331,6 +331,8 @@ try {
             'tools/release_wsl2_verify.py'
             ''
             'Only SHA256 file hashes and technical diagnostics are in this archive.'
+            'Map data (Monaco): OpenStreetMap contributors, ODbL.'
+            'OpenStreetMap attribution: https://www.openstreetmap.org/copyright'
             'There is no automatic upload or remote collection.'
         )
         Write-PlainText (Join-Path $evidence 'ABOUT.txt') ($provenance -join [Environment]::NewLine)
