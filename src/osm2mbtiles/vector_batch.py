@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from .tiles import tile_count, xyz_range
+from .progress import TileProgress
 from .vector import (
     BUFFER, EXTENT, _properties, create_db, layer_specs, metadata,
 )
@@ -166,28 +167,30 @@ def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
             jobs = pool.imap_unordered(
                 _render_batch, microbatches(bbox, lo, hi, side), chunksize=1)
             last = time.monotonic()
-            for batch in jobs:
-                worker_wait_seconds += time.monotonic() - last
-                for z, x, y, data in batch:
-                    seen += 1
-                    if data:
-                        rows_to_insert.append(
-                            (z, x, (1 << z) - 1 - y, sqlite3.Binary(data)))
-                        written += 1
-                if len(rows_to_insert) >= SQLITE_INSERT_BATCH:
-                    stamp = time.monotonic()
-                    conn.executemany(insert_sql, rows_to_insert)
-                    insert_seconds += time.monotonic() - stamp
-                    insert_calls += 1
-                    pending += len(rows_to_insert)
-                    rows_to_insert.clear()
-                if pending >= SQLITE_COMMIT_BATCH:
-                    stamp = time.monotonic()
-                    conn.commit()
-                    commit_seconds += time.monotonic() - stamp
-                    commits += 1
-                    pending = 0
-                last = time.monotonic()
+            with TileProgress('VECTOR-BATCH', total) as progress:
+                for batch in jobs:
+                    worker_wait_seconds += time.monotonic() - last
+                    for z, x, y, data in batch:
+                        seen += 1
+                        if data:
+                            rows_to_insert.append(
+                                (z, x, (1 << z) - 1 - y, sqlite3.Binary(data)))
+                            written += 1
+                    if len(rows_to_insert) >= SQLITE_INSERT_BATCH:
+                        stamp = time.monotonic()
+                        conn.executemany(insert_sql, rows_to_insert)
+                        insert_seconds += time.monotonic() - stamp
+                        insert_calls += 1
+                        pending += len(rows_to_insert)
+                        rows_to_insert.clear()
+                    if pending >= SQLITE_COMMIT_BATCH:
+                        stamp = time.monotonic()
+                        conn.commit()
+                        commit_seconds += time.monotonic() - stamp
+                        commits += 1
+                        pending = 0
+                    last = time.monotonic()
+                    progress.advance(len(batch))
             if seen != total:
                 raise RuntimeError(f"batch export incomplete: {seen}/{total}")
             if rows_to_insert:
