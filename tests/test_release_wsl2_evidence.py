@@ -100,7 +100,7 @@ def test_release_qa_cache_is_isolated_and_never_migrates(tmp_path):
 def test_release_qa_cache_rejects_untrusted_path_components(tmp_path):
     env = dict(os.environ, HOME=str(tmp_path), OSM2MBTILES_TEST_RUN_ID="../../bad")
     result = subprocess.run(
-        ["bash", "-c", f'source "{CACHE}"; echo SHOULD_NOT_RUN'],
+        ["bash", "-c", f'set -e; source "{CACHE}"; echo SHOULD_NOT_RUN'],
         env=env, capture_output=True, text=True
     )
     assert result.returncode == 4
