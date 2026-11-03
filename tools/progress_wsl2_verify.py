@@ -90,7 +90,7 @@ def analyze_progress(text: str) -> dict:
 def read_windows_log(path: Path) -> str:
     """PowerShell 5.1 Tee-Object writes UTF-16LE; newer shells use UTF-8."""
     raw=path.read_bytes()
-    if raw.startswith((b"\xff\\xfe", b"\xfe\\xff")):
+    if raw.startswith((bytes((255,254)), bytes((254,255)))):
         return raw.decode("utf-16",errors="replace")
     if raw[:512].count(b"\x00") > 20:
         return raw.decode("utf-16-le",errors="replace")
