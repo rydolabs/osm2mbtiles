@@ -452,7 +452,11 @@ jobs:
                $summary.mode -ne 'archive_self_test_only') {
               throw 'Archive-only fixture falsely claims a real WSL E2E PASS.'
             }
-            $log=$archive.GetEntry('logs/sensitive-fixture.log')
+            # Compress-Archive may store Windows directory separators.
+            $log=$archive.Entries | Where-Object {
+              $_.FullName.Replace('\','/') -eq 'logs/sensitive-fixture.log'
+            } | Select-Object -First 1
+            if(-not $log) { throw 'Sanitized test log missing from archive.' }
             $reader=[IO.StreamReader]::new($log.Open())
             try { $sanitized=$reader.ReadToEnd() }
             finally { $reader.Dispose() }
