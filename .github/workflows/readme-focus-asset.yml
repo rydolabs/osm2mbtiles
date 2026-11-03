@@ -1,0 +1,59 @@
+name: README focus evidence screenshot (one-time docs branch)
+
+on:
+  push:
+    branches: [docs/readme-positioning-incremental-20261103]
+    paths:
+      - '.github/workflows/readme-focus-asset.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  exact-real-tile-crop:
+    if: github.repository == 'rydolabs/osm2mbtiles' && github.ref == 'refs/heads/docs/readme-positioning-incremental-20261103'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Install Pillow and DejaVu fonts
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-dejavu-core
+          python3 -m pip install 'Pillow>=10'
+      - name: Create zoomed real MVT comparison and validate pinned evidence
+        run: |
+          set -euxo pipefail
+          python3 tools/readme_focus_preview.py \
+            --source docs/assets/berlin-incremental-before-after.png \
+            --evidence docs/assets/readme-preview-evidence.json \
+            --output docs/assets/berlin-incremental-focus.png
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          data=Path('docs/assets/berlin-incremental-focus.png').read_bytes()
+          assert data[:8]==bytes.fromhex('89504e470d0a1a0a')
+          assert struct.unpack('>II',data[16:24])==(1220,780)
+          print('README_FOCUS_IMAGE_VALIDATED',len(data),flush=True)
+          PY
+      - name: Commit verified PNG only to documentation branch
+        run: |
+          set -euxo pipefail
+          test "$GITHUB_REF" = refs/heads/docs/readme-positioning-incremental-20261103
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/assets/berlin-incremental-focus.png
+          git diff --cached --quiet && exit 0
+          git commit -m "docs: add clear zoomed focus on real Berlin OSM diff tile"
+          git push origin HEAD:docs/readme-positioning-incremental-20261103
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: README-real-tile-focus-preview
+          path: docs/assets/berlin-incremental-focus.png
+          retention-days: 14
+          if-no-files-found: warn
