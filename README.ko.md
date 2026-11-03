@@ -1,174 +1,137 @@
 # osm2mbtiles
 
-**OpenStreetMap PBF → PNG Raster MBTiles + MVT/PBF Vector MBTiles**  
-Docker 없이 로컬 PostgreSQL/PostGIS, Mapnik(OSM Carto), osm2pgsql을 이용해 MBTiles를 생성하는 Python 프로젝트입니다. Windows에서는 **WSL2 Ubuntu/Debian**을 사용합니다.
+**OpenStreetMap PBF로 Vector·Raster MBTiles를 만들고, OSM 변경분으로 Vector 타일을 갱신합니다.**
 
-> **상태:** 동작하는 소스 기반 프로토타입입니다. Windows 네이티브 실행 파일이나 모든 의존성이 포함된 포터블 배포판은 제공하지 않습니다. 첫 실행에는 외부 패키지·지도 스타일·폰트·데이터 다운로드가 필요하며, 전국 규모의 장시간 생성과 Windows+WSL 완전 E2E는 추가 검증이 필요합니다.
+[English README](README.md) · [Vector 레이어·속성 문서](docs/VECTOR-TILE-SCHEMA.md) · [벤치마크](docs/BENCHMARKS.md)
 
-## 지원하는 출력
+**지속적으로 변경되는 OSM 지도를 위한 타일 파이프라인입니다.** `.osm.pbf`를 **MVT/PBF Vector MBTiles**, Mapnik 기반 **PNG Raster MBTiles**, 또는 두 가지 형식으로 생성합니다. 별도 **영속 PostGIS DB**를 준비하면 `.osc.gz` 변경분을 적용하고 영향받은 Vector 타일을 다시 생성할 수 있습니다. 변경 때마다 PBF 전체를 다시 import할 필요는 없습니다.
 
-| 모드 | 생성 형식 | 설명 |
-|---|---|---|
-| `--tile-type raster` (기본) | PNG / PNG256 MBTiles | OSM Carto 스타일 + Mapnik으로 실제 그림 타일 렌더링 |
-| `--tile-type vector` | gzip MVT(PBF) MBTiles | PostGIS `ST_AsMVT`; 지도 색상·폰트 없이 지오메트리·속성 저장 |
-| `--tile-type both` | 두 개의 MBTiles | `<name>.raster.mbtiles` + `<name>.vector.mbtiles` |
+**이 프로젝트를 고려할 이유**
 
-**주의:** 입력 `*.osm.pbf`는 OSM 원본이고, 출력 Vector `*.mbtiles` 내부의 PBF는 MVT 타일입니다. 서로 다른 형식입니다. Vector 지도 화면은 별도 MapLibre/Mapbox 스타일이 필요합니다.
+- **Vector 증분 업데이트:** osm2pgsql slim 데이터를 보존하는 전용 DB에서 변경분을 적용합니다.
+- **Vector + Raster 동시 생성:** 필요한 경우 한 번의 공유 import 경로에서 두 MBTiles를 만듭니다.
+- **확인 가능한 출력 스키마:** 19개 MVT 레이어·속성 정보와 증분/전체 재구성 정합성 CI를 제공합니다.
 
-## Windows 빠른 시작
+> **실행 전 확인:** 독립 실행 파일이 아닌 소스 기반 프로토타입입니다. Linux 또는 Windows WSL2, PostgreSQL/PostGIS, osm2pgsql 및 준비된 런타임이 필요합니다. 현재는 **Vector만 생성해도** `convert`에서 Mapnik Python과 OSM Carto 파일이 포함된 런타임을 검사합니다. [설치 조건과 제약](#설치-조건과-제약)을 참조하세요.
 
-사전 요구사항: **Windows 10/11, WSL2 Ubuntu/Debian, PowerShell**, 인터넷과 충분한 디스크 공간.
+## 실제 증분 업데이트 결과
+
+![Berlin Vector 타일 확대 비교: 실제 osm2pgsql append로 가상 카페 POI 1개가 추가된 모습](docs/assets/berlin-incremental-focus.png)
+
+베를린 고정 PBF로 만든 **동일한 z14 MVT 타일**에 실제 `osm2pgsql --append`로 **검증용 가상 카페 한 개**를 추가했습니다. 해당 `poi` 레이어의 피처 수는 **2,875개 → 2,876개**로 바뀌었습니다. [검증 데이터](docs/assets/readme-preview-evidence.json) · [원본 타일 전체 비교](docs/assets/berlin-incremental-before-after.png)
+
+이미지는 실제 생성된 벡터 지오메트리를 확대·표시한 기술적 미리보기이며, 실제 OSM 최신 데이터나 MapLibre·OSM Carto 지도 스타일의 스크린샷은 아닙니다.
+
+## 빠른 시작
+
+### Windows + WSL2
+
+WSL2 Ubuntu/Debian과 네이티브 런타임을 준비한 뒤, 소스 저장소의 Windows 명령 프롬프트에서 실행합니다.
 
 ```bat
-REM 국가를 지정하지 않는 기본 실행: 기존 OSM PBF 파일 선택
-run.bat
-
-REM 직접 선택한 OSM PBF로 Vector 또는 PNG+Vector 생성
 run.bat vector 12-14
 run.bat both 12-14
-
-REM 한국 전체 데이터 자동 다운로드는 명시적으로 요청한 경우에만
-run.bat south-korea
-
-REM 서울 전용 수동 E2E 테스트 (메인 실행기가 아님)
-tests\test-seoul.bat
-tests\test-seoul.bat 12-15 vector
 ```
 
-`tests/test-seoul.bat`는 기존 서울 테스트 전용이며 `test-output/`의 PBF를 재사용합니다. 이 프로젝트의 기본 사용자는 한국 지역에 한정되지 않습니다. 국제 벤치마크 권장 지역은 **베를린(독일)**, 빠른 테스트는 **모나코**입니다. [영어 README](README.md) 및 [국제 성능 벤치마크](docs/BENCHMARKS.md)를 참조하세요.
+기존 `.osm.pbf` 파일을 선택하거나 `run.bat`에 드래그해서 지정할 수 있습니다. 서울 전용 수동 검증은 `tests\test-seoul.bat`를 사용하며 기본 실행기와는 별개입니다.
 
-## Python / Linux · WSL 개발 실행
+### Linux / WSL — PBF에서 Vector MBTiles 생성
 
-이 경로는 준비된 PostgreSQL/PostGIS + Mapnik + OSM Carto 런타임이 필요합니다. 소스 코드만 설치해도 네이티브 프로그램이 자동 설치되는 것은 아닙니다.
+프로젝트 루트에서 [네이티브 런타임](#설치-조건과-제약)을 준비한 뒤:
 
 ```bash
-python3 -m pip install -e '.[test]'
-python3 -m pytest -q
+python3 -m pip install -e .
 
-# 준비된 런타임 및 실제 PBF를 사용
-python3 -m osm2mbtiles convert seoul.osm.pbf \
-  --bbox 126.75,37.40,127.20,37.72 \
-  --zoom 12-14 --tile-type both --raster-format png \
-  --vector-tiler batch --runtime ./runtime \
-  --output seoul.mbtiles --processes 4
+# 베를린 PBF는 미리 다운로드해야 합니다.
+python3 -m osm2mbtiles convert berlin-261001.osm.pbf \
+  --bbox 13.20,52.45,13.60,52.60 --zoom 12-14 \
+  --tile-type vector --runtime ./runtime \
+  --output berlin.mbtiles
 
-python3 -m osm2mbtiles verify seoul.raster.mbtiles
-python3 -m osm2mbtiles verify-vector seoul.vector.mbtiles
-
-# 생성 전에 작업량만 확인
-python3 -m osm2mbtiles convert seoul.osm.pbf \
-  --bbox 126.75,37.40,127.20,37.72 -z 12-14 \
-  -o seoul.mbtiles --dry-run
+python3 -m osm2mbtiles verify-vector berlin.mbtiles
 ```
 
-Vector 엔진: `--vector-tiler postgis|batch` (기본 postgis), Raster 인코딩: `--raster-format png|png256`. 기존 옵션 `--format` / `--encoding`은 호환 별칭으로 유지합니다. 출력 파일이 존재하면 `--force`가 필요합니다.
+[Geofabrik Berlin PBF](https://download.geofabrik.de/europe/germany/berlin.html)는 별도로 받아야 합니다. `--bbox`는 PBF 헤더에 영역 정보가 없는 경우에도 사용할 수 있습니다. `--tile-type both`를 사용하면 같은 import 경로에서 `berlin.vector.mbtiles`와 `berlin.raster.mbtiles`를 생성하며, Raster에는 Mapnik·OSM Carto 스타일과 폰트 등 추가 자산이 필요합니다.
 
-## Vector 레이어·속성 정보
+### OSM `.osc.gz` 변경분으로 Vector 갱신
 
-Vector MBTiles에는 **19개 논리 레이어**가 정의되어 있습니다. 지도 스타일에서는 `source-layer`에 아래 레이어 ID를 정확히 사용해야 합니다.
-
-| 분류 | 레이어 ID | 대표 속성 |
-|---|---|---|
-| 도로·교통 | `road`, `pathway`, `railway`, `transport`, `aeroway` | `class`, `highway`, `surface`, `maxspeed` |
-| 물·지표면 | `water`, `waterway`, `landcover`, `landuse`, `leisure` | `natural`, `waterway`, `landuse` |
-| 건물·시설 | `building`, `building_part`, `aeroway_area`, `power` | `building`, `building:levels`, `height` |
-| 장소·주소 | `place`, `poi`, `housenumber` | `name`, `name:ko`, `amenity`, `addr:housenumber` |
-| 경계 | `boundary`, `boundary_legal` | `boundary`, `admin_level` |
-
-**속성 규칙:** `class`는 각 레이어의 OSM 태그에서 우선순위에 따라 만든 값이며, `osm_id`는 **문자열 합성 식별자**입니다(원본 OSM 숫자 ID와 동일하지 않음). 줌 0~12는 원본 태그 **20개**, 줌 13 이상은 **74개**의 허용 목록을 사용하며, 원본 객체에 없는 속성은 출력되지 않습니다. 속성 예시는 모든 피처에 항상 존재한다는 뜻이 아닙니다.
-
-**[전체 Vector 레이어·속성 스키마 문서](docs/VECTOR-TILE-SCHEMA.md)** — 19개 레이어별 최소 줌·지오메트리·포함 조건, `class` 값 결정 방식, 허용 태그 전체 목록, MapLibre 스타일 적용 예제 및 실제 MBTiles 속성을 읽는 Python 예제가 있습니다.
-
-## 지도 레이어 범위
-
-도로(`road`), 보행로(`pathway`), 철도(`railway`), 건물(`building`, `building_part`), `poi`, 물(`water`), 지표면(`landcover`), `landuse`, 행정 경계(`boundary`) 등 상세 Vector 레이어를 생성합니다. 이번 이관에서 `natural=rock`을 `landcover`에 포함했으며, `boundary=legal`은 행정 경계와 구별되는 **`boundary_legal`** 레이어(z12+)로 추가했습니다.
-
-실제 서울시청 타일 **z14/x13970/y6344** 재생성 검증에서 `landcover`는 130→**235개**(`natural=rock` 105개 추가), 행정 경계는 **15개 유지**, 새 `boundary_legal`은 **80개**, `water`는 **13개 유지**였습니다. [새 저장소 실제 서울 PBF 검증 결과](https://github.com/rydolabs/osm2mbtiles/actions/runs/40842394686)를 확인하세요.
-
-**레이어 이름과 피처 수는 지도 품질 점수가 아닙니다.** Planetiler/Tilemaker 비교는 서로 다른 분류 YAML/Lua 프로필을 사용했습니다. 실제 `water` / `boundary` 객체가 누락된 것인지 판단하려면 원본 태그와 지오메트리를 비교해야 합니다.
-
-## .osc.gz 증분 업데이트 (Vector만, 실험용)
-
-일반 `convert`의 `--slim --drop` 데이터베이스에는 append할 수 없습니다. **전용 PostGIS DB를 처음부터 새로 생성**하고 osm2pgsql middle 데이터를 보존해야 합니다. 아래 예시는 실행 가능한 별도 PostgreSQL 접속 환경이 준비되었다는 전제입니다.
+일반 `convert` DB는 **append용이 아닙니다**. 먼저 기존 데이터가 없는 전용 PostGIS DB를 준비하고 osm2pgsql slim middle 데이터를 보존해야 합니다.
 
 ```bash
+# 이미 실행 중인 전용 PostGIS DB의 접속 정보
 export PGHOST=/path/to/socket PGPORT=5432 PGUSER=your_user PGDATABASE=gis
 
 python3 -m osm2mbtiles.vector_incremental init \
-  --pbf seoul.osm.pbf --output seoul-incremental.mbtiles \
-  --bbox 126.75,37.40,127.20,37.72 --zoom 12-15 --processes 4
+  --pbf berlin-261001.osm.pbf --output berlin-updated.mbtiles \
+  --bbox 13.20,52.45,13.60,52.60 --zoom 12-14
 
 python3 -m osm2mbtiles.vector_incremental append \
-  --diff change.osc.gz --output seoul-incremental.mbtiles
-
-# 변경 적용은 완료했지만 타일 기록이 실패했을 때만
-python3 -m osm2mbtiles.vector_incremental flush \
-  --output seoul-incremental.mbtiles
+  --diff changes.osc.gz --output berlin-updated.mbtiles
 ```
 
-생성·수정·삭제 변경의 만료 타일을 계산하고 MBTiles에 UPSERT/DELETE합니다. 실제 `.osc.gz`를 사용한 새로 생성한 MBTiles와의 정합성 검증이 [CI에서 통과](https://github.com/nssang00/chatgpt-write-test/actions/runs/40828739306)했습니다. **PNG 증분, OSM replication sequence 자동 다운로드/검증, 전국 규모 무중단 갱신은 지원하지 않습니다.** 중간 import 실패 후에는 동일 변경 파일을 무조건 재시도하면 안 됩니다. 변경된 Vector SQL을 사용하는 새 버전으로 업그레이드하면 증분 DB 전체 재생성이 필요할 수 있습니다.
+OSM diff 적용 자체는 완료됐지만 타일 기록이 남아 있을 때만 `python3 -m osm2mbtiles.vector_incremental flush --output berlin-updated.mbtiles`를 사용하세요. 실패 상태가 불명확한 diff를 무조건 재적용하면 안 됩니다. **증분 갱신은 Vector 전용 실험 기능**이며 OSM replication 파일·시퀀스를 자동 다운로드/관리하지 않습니다.
 
-## PostGIS 증분 갱신 누적시간 비교 (Monaco 스모크)
+## 언제 osm2mbtiles를 선택할까?
 
-최초 PBF 생성 시간만 경쟁하는 대신, **초기 생성 + 변경분 반영**과
-Planetiler의 **초기 생성 + 업데이트된 PBF 전체 재생성**의 누적시간을
-비교한다. [실제 Monaco PBF 한 번의 실행](https://github.com/rydolabs/osm2mbtiles/actions/runs/40973051076)
-(z12–16, 인공 hospital POI 1개 추가)에서 다음을 측정했다.
+| 주요 목적 | 적합한 도구 | 고려할 제약 |
+|---|---|---|
+| **OSM diff 기반 Vector 지속 갱신** 또는 **Vector·PNG Raster MBTiles 병행 생성** | **osm2mbtiles** | 별도 PostGIS DB와 런타임 관리가 필요하며 증분 경로는 실험 단계 |
+| 대규모 PBF의 빠른 **Vector 전체 생성** | [Planetiler](https://github.com/onthegomap/planetiler#readme) | 공식 README에서 실시간 증분 반영 없이 전체 PBF import를 사용한다고 설명 |
+| DB 없이 독립 실행 파일 중심의 **일회성 Vector 생성** | [Tilemaker](https://github.com/systemed/tilemaker#readme) | 공식 README에서 지속적으로 최신 OSM 데이터를 반영하려는 경우에는 권하지 않음 |
 
-| 단계 | osm2mbtiles PostGIS | Planetiler 0.10.2 |
-|---|---:|---:|
-| 최초 전체 생성 | 2.149초 | 6.494초 |
-| 변경 반영 | 0.875초 | 4.643초 (전체 재생성) |
-| **두 시점 누적** | **3.024초** | **11.137초** |
+**경쟁 우위는 검증되지 않은 변환 속도가 아니라 사용 흐름의 차이입니다.** 초기 설치가 간편하거나 전체 Vector 재생성이 주목적이라면 Planetiler·Tilemaker가 더 나은 선택일 수 있습니다. 서로 다른 레이어 스키마와 작업량을 고려하지 않은 성능 우위는 주장하지 않습니다. [비교 기준](docs/BENCHMARKS.md).
 
-두 엔진 모두 5개 타일이 실제로 바뀌었다. PostGIS 증분 결과는
-**독립 DB의 전체 재생성과 디코딩된 피처·지오메트리·속성까지 일치**했다.
+## 동작 구조
 
-**일반적 속도 우위를 증명하는 수치는 아니다.** Monaco 입력이 매우 작고,
-단 한 번의 인공 변경 실험이며 양쪽의 출력 피처 수도 다르다(최종
-PostGIS 40,164개, Planetiler 32,783개). 이전 도쿄/간토 측정에서는
-PostGIS 초기 생성만으로도 Planetiler 전체 생성 두 번보다 오래 걸렸다.
-이는 증분 유지의 가치를 보여주는 **작은 검증 예시**이지 도쿄/전국
-성능 순위가 아니다. 상세 프로토콜과 제한은
-[두 시점 갱신 벤치마크](docs/UPDATE-LIFECYCLE-BENCHMARK.md)를 참조한다.
-
-## 성능 비교 — osm2mbtiles / Planetiler / Tilemaker
-
-동일한 실제 서울 OSM PBF와 동일한 **z/x/y**를 사용한 기존 Vector MVT 벤치마크 결과입니다. 세 엔진의 **레이어 프로필과 피처 수가 다르므로 작업량이 완전히 동일한 비교는 아닙니다.**
-
-| 엔진 | 서울시청 z14 타일 1개 (2회 중앙값) | 측정 범위 |
-|---|---:|---|
-| osm2mbtiles PostGIS | **1.775초** | **PostGIS import 완료 후** 타일 생성만 |
-| Planetiler v0.10.2 | 10.355초 | PBF 읽기부터 Vector MBTiles 저장까지 |
-| Tilemaker v2.4 | 5.910초 | PBF 읽기부터 Vector MBTiles 저장까지 |
-
-> **주의:** PostGIS의 1.775초와 나머지 두 엔진의 시간을 전체 실행 성능으로 직접 비교하면 안 됩니다. 기존 1타일 실험에서 PostGIS 최초 import + 후처리는 별도 12.600초였고, DB 초기화는 포함되지 않았습니다. 이 표는 z14/13970/6344 한 타일의 실제 측정치이지 전국·서울 전체 성능 순위가 아닙니다.
-
-**더 의미 있는 공식 벤치마크로 권장하는 범위는 서울 비교 권역 `126.75,37.40,127.20,37.72`, z12–16 (사각형 범위의 XYZ 격자 8,418개)**입니다. 세 엔진 모두 같은 PBF 스냅샷, BBOX, 줌, 쓰레드 수로 **PBF→Vector MBTiles 전체 시간**을 측정하고, osm2mbtiles는 PostGIS import와 타일 생성 시간을 별도로 기록하는 방식을 권장합니다. 1차 확인용 도심 BBOX `126.95,37.51,127.05,37.60`는 z12–16에서 561개 격자입니다.
-
-**이 범위의 3엔진 결과는 아직 측정 전입니다.** 자세한 58타일 실험, 비교 시 레이어 차이와 재현성 조건은 [벤치마크 방법 및 기존 결과](docs/BENCHMARKS.md)를 참고하세요. 이 비교는 Vector **PBF만** 대상으로 하며 Mapnik **PNG 렌더링 성능은 별도의 벤치마크**가 필요합니다.
-
-## 개발·검증
-
-- `python3 -m pytest -q`: Python 로직, MBTiles 구조, 실행기 계약 테스트
-- [원본 실제 Mapnik PNG smoke 테스트](https://github.com/nssang00/chatgpt-write-test/actions/runs/40814498119): Mapnik 3.1.0에서 9개 PNG 타일 생성
-- [서울 Vector 동일 타일 비교](https://github.com/nssang00/chatgpt-write-test/actions/runs/40819700167)
-- [water / landcover / boundary 분류 진단](https://github.com/nssang00/chatgpt-write-test/actions/runs/40829971952)
-
-CI가 통과해도 모든 Windows WSL 배포판에서 완전 E2E 생성이나 웹 OSM 기본 스타일과의 픽셀 일치를 보장하지는 않습니다.
-
-## 구조
-
-```text
-src/osm2mbtiles/   Python CLI, Mapnik PNG worker, PostGIS MVT, incremental updater
-vector/             osm2pgsql flex Lua, import 후 SQL
-tools/              Windows PowerShell / WSL 스크립트 및 캐시 관리
-tests/              회귀 테스트
-benchmarks/         재현용 비교 스크립트와 실험 프로필
-docs/               속도 비교 조건 및 제한사항
-.github/workflows/  자동화 테스트
+```mermaid
+flowchart LR
+    A["OSM 원본<br/>.osm.pbf"] --> B["osm2pgsql"]
+    B --> C[("PostGIS")]
+    C --> D["ST_AsMVT"]
+    C --> E["Mapnik + OSM Carto"]
+    D --> F["Vector MBTiles<br/>gzip MVT"]
+    E --> G["Raster MBTiles<br/>PNG"]
 ```
 
-## 라이선스 · 출처
+```mermaid
+flowchart LR
+    A["최초 .osm.pbf"] --> B["증분 init"]
+    B --> C[("영속 PostGIS<br/>slim 데이터 보존")]
+    D["변경 .osc.gz"] --> E["osm2pgsql --append"]
+    E --> C
+    C --> F["변경 타일 추적·재생성"]
+    F --> G["갱신된 Vector MBTiles"]
+    B --> G
+```
 
-프로젝트 자체 코드는 [MIT](LICENSE). OSM 원본은 OpenStreetMap contributors의 ODbL 및 Attribution 의무를 따릅니다. PostgreSQL/PostGIS, osm2pgsql, Mapnik, OSM Carto, 외부 지도 리소스/폰트는 각각의 라이선스를 따르며 이 저장소에서 해당 바이너리와 지도 데이터 전체를 재배포하지 않습니다.
+입력 OSM PBF와 출력 Vector MBTiles 내부의 MVT/PBF는 **서로 다른 파일 형식**입니다. Raster는 원본 PBF로부터 별도의 Mapnik 경로를 통해 PNG를 생성합니다. 증분 적용 시 유도 label-point 데이터 갱신 과정은 변경된 객체에만 한정되지 않을 수 있습니다.
+
+## Vector 출력과 속성
+
+![실제 Berlin Vector MVT 지오메트리로 만든 미리보기](docs/assets/berlin-vector-preview.png)
+
+Vector MBTiles에는 아래 **19개 논리 레이어**가 생성될 수 있습니다. 레이어별로 최소 줌·피처 존재 여부가 다르므로 모든 타일에 모든 레이어가 있는 것은 아닙니다.
+
+| 분류 | 레이어 ID |
+|---|---|
+| 도로·교통 | `road`, `pathway`, `railway`, `transport`, `aeroway` |
+| 물·지표면 | `water`, `waterway`, `landcover`, `landuse`, `leisure` |
+| 건물·시설 | `building`, `building_part`, `aeroway_area`, `power` |
+| 장소·주소 | `place`, `poi`, `housenumber` |
+| 경계 | `boundary`, `boundary_legal` |
+
+생성 속성 `class`와 `osm_id`는 문자열입니다. 원본 OSM 태그는 일부만 출력되며 **z0–12에서는 20개**, **z13 이상에서는 74개** 키를 허용합니다. 모든 피처가 모든 속성을 갖는 것은 아닙니다.
+
+**[Vector 레이어·속성 전체 스키마](docs/VECTOR-TILE-SCHEMA.md)** — 레이어별 최소 줌, 지오메트리, 필터, `class` 우선순위, 전체 속성 목록, MapLibre 예제와 실제 MBTiles 데이터 확인 방법.
+
+## 설치 조건과 제약
+
+- 소스 체크아웃과 **Linux / Windows WSL2**, **Python 3.10+**, **PostgreSQL/PostGIS**, **osm2pgsql**, 네이티브 `./runtime`이 필요합니다. `pip install`만으로 이 런타임을 설치할 수는 없습니다.
+- 현재 `convert`는 **Vector 전용 실행에서도** Mapnik 호환 Python과 OSM Carto 스타일 파일을 포함한 런타임을 요구합니다. PNG Raster 출력에는 실제 작동하는 Mapnik/OSM Carto, 폰트 및 추가 스타일 자산이 필요합니다.
+- MBTiles를 HTTP로 제공하는 서버나 완성된 MapLibre 스타일은 포함하지 않습니다.
+- 증분 경로는 Vector만 지원하고, 자동 OSM replication 동기화·PNG 증분·전국 규모 무중단 운영은 지원 또는 보장하지 않습니다. Vector 코드·스키마 변경 시 영속 DB를 새로 초기화해야 할 수 있습니다.
+- CI는 Python·셸 검사, 실제 Mapnik PNG 생성, OSM diff와 독립 전체 재구성 간 피처 정합성을 검증합니다. 모든 Windows/WSL 환경에서 완전한 E2E 작업이나 서로 다른 DB 사이의 gzip 바이트 동일성을 보장하지는 않습니다.
+
+런타임 점검: `python3 -m osm2mbtiles doctor --runtime ./runtime`. 빠른 지역 테스트는 **Monaco**, 공식 재현용 주요 비교 범위는 **Berlin**입니다. [벤치마크](docs/BENCHMARKS.md) · [출력 안정성](docs/OUTPUT-STABILITY-REGRESSION.md) · [증분 처리 한계](docs/UPDATE-LIFECYCLE-BENCHMARK.md).
+
+**라이선스·출처:** 프로젝트 [MIT](LICENSE). 지도 데이터 © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL/출처 표기). Mapnik, OSM Carto, 폰트, PostgreSQL/PostGIS, osm2pgsql 등은 각자의 라이선스를 따릅니다.
