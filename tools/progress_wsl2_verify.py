@@ -87,6 +87,16 @@ def analyze_progress(text: str) -> dict:
     }
 
 
+def read_windows_log(path: Path) -> str:
+    """PowerShell 5.1 Tee-Object writes UTF-16LE; newer shells use UTF-8."""
+    raw=path.read_bytes()
+    if raw.startswith((b"\xff\\xfe", b"\xfe\\xff")):
+        return raw.decode("utf-16",errors="replace")
+    if raw[:512].count(b"\x00") > 20:
+        return raw.decode("utf-16-le",errors="replace")
+    return raw.decode("utf-8-sig",errors="replace")
+
+
 def stream_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -160,7 +170,7 @@ def main(argv=None):
     result={"schema":"real-wsl2-progress-v1", "mode":"real_wsl2",
             "passed":False,"progress":None,"archives":[]}
     try:
-        raw=args.log.read_text(encoding="utf-8",errors="replace")
+        raw=read_windows_log(args.log)
         result["progress"]=analyze_progress(raw)
         raster,png=inspect_mbtiles(args.raster,"png")
         vector,_=inspect_mbtiles(args.vector,"pbf")
