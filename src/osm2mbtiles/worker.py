@@ -10,6 +10,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from progress import TileProgress  # sibling of this standalone Mapnik worker
 
 TILE = 256
 HALF = 20037508.342789244
@@ -35,6 +36,16 @@ def tasks(job):
             for mx in range((xmin//size)*size,xmax+1,size):
                 yield (z,mx,my,min(size,(1<<z)-mx),min(size,(1<<z)-my),
                        max(mx,xmin),min(mx+size-1,xmax),max(my,ymin),min(my+size-1,ymax))
+
+def expected_counts(job):
+    """Count exactly the XYZ tiles and 8x8-style metatiles scheduled by tasks()."""
+    total_tiles = total_metas = 0
+    size = int(job.get('metatile', 8))
+    for zoom in range(job['minzoom'], job['maxzoom'] + 1):
+        xmin, xmax, ymin, ymax = bounds(job['bbox'], zoom)
+        total_tiles += (xmax - xmin + 1) * (ymax - ymin + 1)
+        total_metas += (xmax // size - xmin // size + 1) * (ymax // size - ymin // size + 1)
+    return total_tiles, total_metas
 
 def create_db(db,job):
     db.execute('PRAGMA journal_mode=WAL')
@@ -63,53 +74,58 @@ def render(job):
     if fonts.is_dir() and hasattr(mapnik,'register_fonts'):
         # Python mapnik.register_fonts(path, valid_extensions=[...]) already
         # recurses into subdirectories; the second argument is NOT a Boolean.
-        # Passing True breaks Python Mapnik 3.x (TypeError: bool not iterable).
         mapnik.register_fonts(str(fonts))
     plugins = runtime/'lib'/'mapnik'/'input'
     if plugins.is_dir() and hasattr(mapnik,'register_datasources'):
         mapnik.register_datasources(str(plugins))
     path = Path(job['partial'])
     path.parent.mkdir(parents=True,exist_ok=True)
+    total_tiles, total_metas = expected_counts(job)
     with sqlite3.connect(path) as db:
         create_db(db,job)
-        mp = mapnik.Map(TILE,TILE)
-        mapnik.load_map(mp,job['mapfile'],True)
-        if '3857' not in mp.srs and '+proj=merc' not in mp.srs:
-            raise ValueError(f'Expected Web Mercator style; got {mp.srs}')
-        if mp.buffer_size == 0:
-            mp.buffer_size = int(job['buffer'])
         completed = db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
         count = 0
-        for z,mx,my,mw,mh,xmin,xmax,ymin,ymax in tasks(job):
-            coords = [(x,y,(1<<z)-1-y) for y in range(ymin,ymax+1)
-                      for x in range(xmin,xmax+1)]
-            missing = [p for p in coords if db.execute(
-                'SELECT 1 FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
-                (z,p[0],p[2])).fetchone() is None]
-            if not missing:
-                continue
-            mp.resize(mw*TILE,mh*TILE)
-            step = 2*HALF/(1<<z)
-            bbox = mapnik.Box2d(-HALF+mx*step,HALF-(my+mh)*step,
-                                -HALF+(mx+mw)*step,HALF-my*step)
-            mp.zoom_to_box(bbox)
-            im = mapnik.Image(mw*TILE,mh*TILE)
-            mapnik.render(mp,im)
-            for x,y,tms_y in missing:
-                png = im.view((x-mx)*TILE,(y-my)*TILE,TILE,TILE).tostring('png')
-                db.execute('INSERT INTO tiles VALUES (?,?,?,?)',(z,x,tms_y,png))
-            count += 1
-            completed += len(missing)
-            if count % 16 == 0:
-                db.commit()
-                print(f'METATILES={count} TILES={completed}',flush=True)
-        db.commit()
-        # Complete database is checkpointed and switched back to single-file journal mode.
-        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-        db.execute('PRAGMA journal_mode=DELETE')
-        result = db.execute('PRAGMA integrity_check').fetchone()[0]
-        if result != 'ok':
-            raise RuntimeError('MBTiles integrity_check failed: '+result)
+        # No invented import percentages: this denominator is the real XYZ
+        # area scheduled by tasks(), including already-committed resume tiles.
+        with TileProgress('RASTER', total_tiles, completed=completed,
+                          metatiles=total_metas) as progress:
+            mp = mapnik.Map(TILE,TILE)
+            mapnik.load_map(mp,job['mapfile'],True)
+            if '3857' not in mp.srs and '+proj=merc' not in mp.srs:
+                raise ValueError(f'Expected Web Mercator style; got {mp.srs}')
+            if mp.buffer_size == 0:
+                mp.buffer_size = int(job['buffer'])
+            for z,mx,my,mw,mh,xmin,xmax,ymin,ymax in tasks(job):
+                coords = [(x,y,(1<<z)-1-y) for y in range(ymin,ymax+1)
+                          for x in range(xmin,xmax+1)]
+                missing = [p for p in coords if db.execute(
+                    'SELECT 1 FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?',
+                    (z,p[0],p[2])).fetchone() is None]
+                if not missing:
+                    continue
+                mp.resize(mw*TILE,mh*TILE)
+                step = 2*HALF/(1<<z)
+                bbox = mapnik.Box2d(-HALF+mx*step,HALF-(my+mh)*step,
+                                    -HALF+(mx+mw)*step,HALF-my*step)
+                mp.zoom_to_box(bbox)
+                im = mapnik.Image(mw*TILE,mh*TILE)
+                mapnik.render(mp,im)
+                for x,y,tms_y in missing:
+                    png = im.view((x-mx)*TILE,(y-my)*TILE,TILE,TILE).tostring('png')
+                    db.execute('INSERT INTO tiles VALUES (?,?,?,?)',(z,x,tms_y,png))
+                count += 1
+                completed += len(missing)
+                progress.advance(len(missing))
+                if count % 16 == 0:
+                    db.commit()
+                    print(f'METATILES={count} TILES={completed}',flush=True)
+            db.commit()
+            # Complete database is checkpointed and switched back to single-file journal mode.
+            db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            db.execute('PRAGMA journal_mode=DELETE')
+            result = db.execute('PRAGMA integrity_check').fetchone()[0]
+            if result != 'ok':
+                raise RuntimeError('MBTiles integrity_check failed: '+result)
         print(f'COMPLETE TILES={completed}',flush=True)
 
 if __name__ == '__main__':
