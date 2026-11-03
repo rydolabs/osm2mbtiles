@@ -1,0 +1,271 @@
+name: Release candidate E2E gates (real PBF / clean install / WSL)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release-e2e.yml'
+      - 'tests/release_*.py'
+      - 'docs/RELEASE-READINESS.md'
+      - 'src/**'
+      - 'pyproject.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-raster-and-both:
+    name: Real OSM Carto raster + both from Monaco PBF
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system PostGIS, Mapnik, OSM Carto compiler
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            postgresql-16 postgresql-client-16 postgresql-16-postgis-3 \
+            postgresql-16-postgis-3-scripts osm2pgsql gdal-bin \
+            python3-mapnik python3-psycopg2 python3-requests \
+            python3-yaml python3-pil python3-pip \
+            fonts-hanazono fonts-dejavu-core fontconfig \
+            nodejs npm git curl ca-certificates
+          sudo npm install -g carto@1.2.0
+          /usr/bin/python3 - <<'PY'
+          import mapnik, psycopg2, requests, yaml, PIL
+          print('NATIVE_MAPNIK_CARTO_RUNTIME_OK',mapnik.mapnik_version_string(),flush=True)
+          PY
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          osm2pgsql --version
+          carto --version
+      - name: Freeze input, prepare genuine OSM Carto v6.0.0, and stage native runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export W="$RUNNER_TEMP/real-release-maps"
+          mkdir -p "$W"
+          curl -fLsS --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 240 \
+            https://download.geofabrik.de/europe/monaco-latest.osm.pbf \
+            -o "$W/monaco.osm.pbf"
+          test "$(stat -c%s "$W/monaco.osm.pbf")" -gt 25000
+          sha256sum "$W/monaco.osm.pbf" | tee "$W/monaco.sha256"
+          git clone --depth 1 --branch v6.0.0 \
+            https://github.com/openstreetmap-carto/openstreetmap-carto.git "$W/osm-carto"
+          (
+            cd "$W/osm-carto"
+            carto -a 3.0.22 project.mml > project.xml
+            test -s project.xml
+            # Use distro Hanazono fonts instead of discontinued OSDN mirror.
+            /usr/bin/python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/get-fonts.py')
+          s=p.read_text(encoding='utf-8')
+          marker='downloadToFile(\n    ["https://mirrors.dotsrc.org/osdn/hanazono-font/'
+          if marker in s:
+              start=s.index(marker)
+              end=s.index('# clean up tmp directories',start)
+              p.write_text(s[:start]+'# Hanazono fonts supplied via Ubuntu package\n'+s[end:],encoding='utf-8')
+          PY
+            mkdir -p fonts
+            /usr/bin/python3 scripts/get-fonts.py
+            for font in HanaMinA HanaMinB; do
+              test -f "/usr/share/fonts/truetype/hanazono/$font.ttf"
+              ln -sf "/usr/share/fonts/truetype/hanazono/$font.ttf" "fonts/$font.ttf"
+            done
+            touch .osm2mbtiles-fonts-ready
+          )
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          /usr/bin/python3 tools/stage_from_system.py \
+            --style-src "$W/osm-carto" --dest "$W/runtime" \
+            --mapnik-python /usr/bin/python3
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          /usr/bin/python3 -m osm2mbtiles doctor --runtime "$W/runtime"
+      - name: Raster-only and Both full CLI paths on real Monaco PBF
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export W="$RUNNER_TEMP/real-release-maps"
+          export PYTHONPATH="$GITHUB_WORKSPACE/src"
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          # Distinct database workspaces to exercise both independent modes.
+          /usr/bin/python3 -m osm2mbtiles convert "$W/monaco.osm.pbf" \
+            --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
+            --tile-type raster --runtime "$W/runtime" \
+            --workdir "$W/raster-db" --processes 2 \
+            --output "$W/monaco-raster.mbtiles" \
+            > "$W/raster.log" 2>&1 || { tail -n 110 "$W/raster.log"; exit 1; }
+          /usr/bin/python3 -m osm2mbtiles verify "$W/monaco-raster.mbtiles" \
+            | tee "$W/raster-verify.log"
+          /usr/bin/python3 -m osm2mbtiles convert "$W/monaco.osm.pbf" \
+            --bbox 7.41,43.72,7.44,43.75 --zoom 12-13 \
+            --tile-type both --runtime "$W/runtime" \
+            --workdir "$W/both-db" --processes 2 \
+            --output "$W/monaco-both.mbtiles" \
+            > "$W/both.log" 2>&1 || { tail -n 110 "$W/both.log"; exit 1; }
+          /usr/bin/python3 -m osm2mbtiles verify "$W/monaco-both.raster.mbtiles" \
+            | tee "$W/both-raster-verify.log"
+          /usr/bin/python3 -m osm2mbtiles verify-vector "$W/monaco-both.vector.mbtiles" \
+            | tee "$W/both-vector-verify.log"
+          grep -F '[SHARED] Importing OSM once' "$W/both.log"
+      - name: Assert non-empty real PNG, gzip MVT, coordinate and layer semantics
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export W="$RUNNER_TEMP/real-release-maps"
+          /usr/bin/python3 - <<'PY'
+          import os,sqlite3,json,io,gzip,hashlib
+          from pathlib import Path
+          from PIL import Image
+          W=Path(os.environ['W'])
+          report={'pbf_sha256':(W/'monaco.sha256').read_text().split()[0]}
+          for name,kind in [('monaco-raster.mbtiles','png'),
+                            ('monaco-both.raster.mbtiles','png'),
+                            ('monaco-both.vector.mbtiles','pbf')]:
+              p=W/name
+              assert p.is_file() and p.stat().st_size>16384, p
+              with sqlite3.connect(p) as db:
+                  assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+                  meta=dict(db.execute('SELECT name,value FROM metadata'))
+                  assert meta['format']==kind, (p,meta['format'])
+                  rows=db.execute('SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles').fetchall()
+                  assert len(rows)>0, p
+                  for z,x,y,blob in rows:
+                      assert z in (12,13) and 0<=x<(1<<z) and 0<=y<(1<<z)
+                      assert blob.startswith(bytes.fromhex('89504e470d0a1a0a')) if kind=='png' else blob.startswith(bytes.fromhex('1f8b'))
+                  if kind=='png':
+                      images=[Image.open(io.BytesIO(blob)).convert('RGB') for _,_,_,blob in rows]
+                      color_counts=[len(im.getcolors(256*256) or []) for im in images]
+                      assert any(count>10 for count in color_counts), 'Real Carto map visually blank/flat'
+                      report[name]={'tile_count':len(rows),'max_distinct_rgb':max(color_counts),'bytes':p.stat().st_size}
+                  else:
+                      layers=json.loads(meta['json'])['vector_layers']
+                      assert len(layers)==19, len(layers)
+                      assert 'road' in [l['id'] for l in layers]
+                      uncompressed=[gzip.decompress(b) for _,_,_,b in rows]
+                      assert any(uncompressed)
+                      report[name]={'tile_count':len(rows),'logical_layers':len(layers),'bytes':p.stat().st_size}
+          (W/'release-real-map-proof.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('REAL_CARTO_RASTER_AND_BOTH_E2E_PASS',json.dumps(report),flush=True)
+          PY
+      - name: Keep provenance and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p release-raster-evidence
+          W="$RUNNER_TEMP/real-release-maps"
+          for f in monaco.sha256 raster.log both.log raster-verify.log \
+                   both-raster-verify.log both-vector-verify.log \
+                   release-real-map-proof.json; do
+            cp "$W/$f" release-raster-evidence/ 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-real-carto-raster-and-both-evidence
+          path: release-raster-evidence/
+          retention-days: 14
+          if-no-files-found: warn
+
+  isolated-wheel:
+    name: Wheel build and install outside source tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build wheel + sdist and verify metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install build
+          python -m build
+          ls -lh dist
+          python -m zipfile -l dist/*.whl | tee wheel-file-list.txt
+      - name: Install in clean venv outside repository and verify all vector assets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m venv "$RUNNER_TEMP/release-venv"
+          "$RUNNER_TEMP/release-venv/bin/python" -m pip install dist/*.whl 'psycopg2-binary>=2.9,<3'
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/release-venv/bin/python" -m osm2mbtiles --help
+          "$RUNNER_TEMP/release-venv/bin/python" - <<'PY'
+          from pathlib import Path
+          import os
+          import osm2mbtiles.vector_incremental as inc
+          import osm2mbtiles.cli as cli
+          style=inc.source_style()
+          sql=inc.post_import_sql()
+          print('ISOLATED_WHEEL_ASSET_LOCATIONS',style,sql,flush=True)
+          assert Path.cwd()!=Path(os.environ['GITHUB_WORKSPACE']), 'Not isolated'
+          assert style.is_file(), (
+              'RELEASE_BLOCKER: standalone wheel cannot locate vector/vector-flex.lua'
+          )
+          assert sql.is_file(), (
+              'RELEASE_BLOCKER: standalone wheel cannot locate vector/post-import.sql'
+          )
+          print('ISOLATED_WHEEL_VECTOR_ASSETS_OK',flush=True)
+          PY
+      - name: Save wheel manifest
+        if: always()
+        run: |
+          mkdir -p release-wheel-evidence
+          cp wheel-file-list.txt release-wheel-evidence/ || true
+          sha256sum dist/* > release-wheel-evidence/build-sha256.txt 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-wheel-isolation-evidence
+          path: release-wheel-evidence/
+          retention-days: 14
+          if-no-files-found: warn
+
+  windows-wsl2:
+    name: Windows runner WSL2 capability + launcher preflight
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Windows native shell parse and WSL2 capability report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $tokens=$null;$errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/run_windows.ps1').Path,
+            [ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors) { throw ($errors|Out-String) }
+          Write-Host 'WINDOWS_LAUNCHER_PARSE_PASS'
+          $report=@(
+            '# Windows hosted runner WSL2 release probe',
+            '',
+            'This job checks available WSL2 capability, not a user PC.'
+          )
+          if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+            $result = & wsl.exe --list --verbose 2>&1
+            $code=$LASTEXITCODE
+            $text=($result -join ' ')
+            Write-Host "WSL2 probe exit=$code"
+            Write-Host $text
+            if ($code -eq 0 -and $text -match 'Ubuntu' -and $text -match '2') {
+              $report += 'WSL2 Ubuntu appears available; manual E2E still required unless runner actually completes conversion.'
+              $report += 'RELEASE_GATE_WINDOWS_WSL2_E2E_NOT_PROVEN'
+            } else {
+              $report += 'RELEASE_GATE_WINDOWS_WSL2_UNAVAILABLE_ON_HOSTED_RUNNER'
+              $report += "wsl.exe list exit code: $code"
+            }
+          } else {
+            $report += 'RELEASE_GATE_WINDOWS_WSL2_EXECUTABLE_NOT_AVAILABLE'
+          }
+          $report -join "\`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          # Do not pretend shell parsing proves Windows+WSL2 end-to-end success.
+      - name: Windows native CLI smoke
+        shell: pwsh
+        run: |
+          py -3 -m pip install -e .
+          py -3 -m osm2mbtiles --help
+          Write-Host 'WINDOWS_HOST_PYTHON_CLI_IMPORT_PASS'
