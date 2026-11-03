@@ -4,7 +4,24 @@
 OSM_CACHE_BASE="$HOME/.cache/osm2mbtiles"
 OSM_CACHE_LEGACY="$HOME/.cache/osm2mbtiles-oneclick"
 
+# An explicit real-hardware test ID redirects work to a private WSL cache.
+# This never migrates, prunes or overwrites the normal one-click cache.
+if [[ -n "${OSM2MBTILES_TEST_RUN_ID:-}" ]]; then
+  if [[ ! "$OSM2MBTILES_TEST_RUN_ID" =~ ^[a-zA-Z0-9_-]{1,50}$ ]]; then
+    echo '[ERROR] Invalid isolated WSL test run ID' >&2
+    exit 4
+  fi
+  OSM_CACHE_BASE="$HOME/.cache/osm2mbtiles-release-tests/$OSM2MBTILES_TEST_RUN_ID"
+fi
+
 osm_cache_select() {
+  if [[ -n "${OSM2MBTILES_TEST_RUN_ID:-}" ]]; then
+    if [[ -L "$OSM_CACHE_BASE" ]]; then
+      echo '[ERROR] Refusing symlinked test cache' >&2
+      return 4
+    fi
+    return 0
+  fi
   if [[ -L "$OSM_CACHE_BASE" ]]; then
     echo "[ERROR] Refusing symlinked cache directory: $OSM_CACHE_BASE" >&2
     return 4
