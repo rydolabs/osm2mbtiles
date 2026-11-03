@@ -15,7 +15,7 @@
 <details>
 <summary>Before you start: native dependencies</summary>
 
-This is a **source-based prototype**, not a single executable. Linux or Windows WSL2 (Ubuntu/Debian) needs PostgreSQL/PostGIS, osm2pgsql, and a prepared runtime. The current `convert` command checks for Mapnik-compatible Python and OSM Carto style files **even for vector-only conversion**. See [Requirements & limitations](#requirements--limitations).
+This is a **source-based prototype**, not a single executable. Linux or Windows WSL2 (Ubuntu/Debian) needs PostgreSQL/PostGIS and osm2pgsql. **Vector-only conversion can use system tools without Mapnik or OSM Carto**; raster or `both` still requires the prepared full runtime. See [Requirements & limitations](#requirements--limitations).
 </details>
 
 ## See a real OSM change
@@ -39,21 +39,21 @@ Choose an existing local `.osm.pbf` in the launcher (or drag one onto `run.bat`)
 
 ### Linux / WSL: PBF → Vector MBTiles
 
-From the repository root with the [native runtime](#requirements--limitations) prepared:
+From the repository root, with **system PostgreSQL/PostGIS and osm2pgsql installed** (no Carto style or Mapnik needed for vector only):
 
 ```bash
-python3 -m pip install -e .
+python3 -m pip install -e '.[vector]'
+python3 -m osm2mbtiles doctor --vector-only
 
 # Download a local Berlin PBF first; the command does not download data.
 python3 -m osm2mbtiles convert berlin-261001.osm.pbf \
   --bbox 13.20,52.45,13.60,52.60 --zoom 12-14 \
-  --tile-type vector --runtime ./runtime \
-  --output berlin.mbtiles
+  --tile-type vector --output berlin.mbtiles
 
 python3 -m osm2mbtiles verify-vector berlin.mbtiles
 ```
 
-Get the [Geofabrik Berlin OSM PBF](https://download.geofabrik.de/europe/germany/berlin.html) beforehand. An explicit `--bbox` also works when the extract lacks a PBF header bounding box. Replace `--tile-type vector` with `--tile-type both` to produce `berlin.vector.mbtiles` and `berlin.raster.mbtiles` from the shared import; PNG needs working Mapnik/OSM Carto styles, fonts and external assets.
+Get the [Geofabrik Berlin OSM PBF](https://download.geofabrik.de/europe/germany/berlin.html) beforehand. An explicit `--bbox` also works when the extract lacks a PBF header bounding box. To generate **both** formats, use `--tile-type both --runtime ./runtime` with a fully prepared raster runtime: this creates `berlin.vector.mbtiles` and `berlin.raster.mbtiles` from a shared import. Raster still needs Mapnik/OSM Carto, fonts and external assets.
 
 ### Apply OSM diffs to persistent **vector** tiles
 
@@ -77,7 +77,7 @@ If a diff was applied successfully but tile writing remains pending, `python3 -m
 
 | Your primary need | Tool to consider | Trade-off |
 |---|---|---|
-| Keep an existing vector map updated from OSM `.osc.gz` changes, or produce **both vector and PNG raster MBTiles** | **osm2mbtiles** | Retained PostGIS state and native runtime setup; incremental update path is experimental |
+| Keep an existing vector map updated from OSM `.osc.gz` changes, generate **vector tiles using system PostGIS without Mapnik**, or produce both vector and PNG raster MBTiles | **osm2mbtiles** | PostGIS/osm2pgsql setup; experimental incremental path needs a persistent DB, raster requires a separate full runtime |
 | Generate a large vector tile archive from a PBF snapshot with strong full-build throughput | [Planetiler](https://github.com/onthegomap/planetiler#readme) | Planetiler's own README says it processes full PBF imports rather than incorporating real-time updates |
 | Create vector MBTiles/PMTiles without a database, especially for one-off exports | [Tilemaker](https://github.com/systemed/tilemaker#readme) | Tilemaker explicitly does not recommend itself for continuously updated OSM data |
 
@@ -132,12 +132,12 @@ Generated `class` and `osm_id` are strings. OSM tag values are sparse: **20 allo
 
 ## Requirements & limitations
 
-- **Linux / Windows WSL2** and a source checkout (top-level `vector/` assets are not packaged into a standalone wheel).
-- **Python 3.10+**, PostgreSQL/PostGIS, osm2pgsql and a prepared `./runtime`. The current `convert` CLI validates a full native runtime (including Mapnik-compatible Python and OSM Carto style files) **even in vector-only mode**; `pip install` alone is not a native runtime installer.
-- Raster output needs functioning Mapnik, OSM Carto, fonts and any style-specific external assets. The project does **not** include a hosted tile server or ready-to-use MapLibre map style.
+- **Linux / Windows WSL2** and a source checkout (the top-level `vector/` flex assets are not packaged into a standalone wheel).
+- **Vector-only:** Python 3.10+ (`python3 -m pip install -e '.[vector]'`), system PostgreSQL/PostGIS and osm2pgsql. The CLI locates PostgreSQL tools from the supplied runtime if present, otherwise from PATH or Ubuntu/Debian's versioned PostgreSQL binary directory. **No Mapnik, OSM Carto, or prepared `./runtime` is required.** The PostGIS extension must be installed on the host. Use `doctor --vector-only` to check native tools and Python psycopg2.
+- **Raster or `both`:** the original full `./runtime` remains required: Mapnik-compatible Python, OSM Carto style, PostgreSQL tools, fonts and other style-dependent assets. Use `doctor --runtime ./runtime`. The project does **not** include a hosted tile server or ready-to-use MapLibre style.
 - **Incremental updates are vector-only and experimental.** No PNG diff updates, automatic `.osc.gz` acquisition/sequence tracking, or claim of nationwide, unattended operation. Production schema changes can require a fresh persistent DB initialization.
 - CI checks Python and shell behavior, real Mapnik PNG rendering and synthetic OSM diff vs independent full-rebuild feature parity. It does **not** certify every Windows/WSL system or universal MVT gzip-byte reproducibility between independent DB rebuilds.
 
-Use `python3 -m osm2mbtiles doctor --runtime ./runtime` for the full native runtime check. A small **Monaco** input is suitable for smoke testing; **Berlin** is the primary benchmark region. See [reproducible benchmarks](docs/BENCHMARKS.md), [output stability](docs/OUTPUT-STABILITY-REGRESSION.md) and [update lifecycle limits](docs/UPDATE-LIFECYCLE-BENCHMARK.md).
+Use `python3 -m osm2mbtiles doctor --vector-only` for the system vector tool check, or `python3 -m osm2mbtiles doctor --runtime ./runtime` for raster and combined output. A small **Monaco** input is suitable for smoke testing; **Berlin** is the primary benchmark region. See [reproducible benchmarks](docs/BENCHMARKS.md), [output stability](docs/OUTPUT-STABILITY-REGRESSION.md) and [update lifecycle limits](docs/UPDATE-LIFECYCLE-BENCHMARK.md).
 
 **License & attribution:** Project [MIT](LICENSE). Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL/attribution). PostgreSQL/PostGIS, osm2pgsql, Mapnik/OSM Carto, fonts and external map data retain their respective licenses.
