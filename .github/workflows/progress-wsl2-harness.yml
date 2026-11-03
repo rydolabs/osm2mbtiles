@@ -73,6 +73,9 @@ jobs:
           if ($failed -ne 1) { throw 'ZIP missing explicit failed-run evidence' }
           Write-Host 'WINDOWS_ZIP_SUCCESS_FAILURE_REDACTION_SELFTEST_PASS'
           Write-Host 'NOTE: A GitHub-hosted Windows runner did NOT run WSL2.'
+          # The intentional negative test left LASTEXITCODE=1. The assertions
+          # above already proved it was correctly handled; reset job status.
+          exit 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
