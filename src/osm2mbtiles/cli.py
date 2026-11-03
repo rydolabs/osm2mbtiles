@@ -13,6 +13,7 @@ from .pbf import read_bbox, PBFError
 from .runtime import Runtime, LocalDatabase, PipelineError, file_digest, run
 from .tiles import validate_bbox, tile_count, metatiles
 from .validate import inspect, compare, ValidationError
+from .resources import vector_assets_dir
 
 MAX_TILES = 2_000_000
 
@@ -194,7 +195,7 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
                name=raster_out.stem,job_key=job_key,buffer=args.buffer,
                metatile=args.metatile,processes=args.processes,encoding=args.encoding,
                runtime=str(runtime.root),fonts=str(style/'fonts')) if raster else None
-    vector_dir = Path(__file__).resolve().parents[2]/'vector'
+    vector_dir = vector_assets_dir()
     if vector and not (vector_dir/'vector-flex.lua').is_file():
         raise PipelineError(f'Missing vector flex source: {vector_dir}')
     shared_key = hashlib.sha256((key + file_digest(vector_dir/'vector-flex.lua') +

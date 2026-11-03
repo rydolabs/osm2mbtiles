@@ -14,3 +14,6 @@ __pycache__/
 *.mbtiles-wal
 *.mbtiles-shm
 *.log
+# Windows WSL2 QA includes unredacted local logs and PBFs; NEVER commit them.
+release-test-results/
+archive-selftest-output/
