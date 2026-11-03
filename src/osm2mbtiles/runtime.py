@@ -8,6 +8,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import time
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -108,11 +109,42 @@ class Runtime:
         return env
 
 def run(cmd: list[str | Path], env: dict | None = None, cwd: Path | None = None) -> None:
+    """Run native tools with inherited live output and elapsed-only heartbeat.
+
+    Imports, external GIS downloads and long SQL steps have no reliable
+    percentage; never present synthetic progress for those operations.
+    """
     argv = [str(v) for v in cmd]
+    exe = Path(argv[0]).name
+    stage = ('IMPORT' if 'osm2pgsql' in exe else
+             'RASTER' if any('worker.py' in a and 'vector_worker' not in a for a in argv[1:]) else
+             'VECTOR' if any('vector_worker.py' in a for a in argv[1:]) else 'TASK')
+    started = time.monotonic()
+    process = None
     try:
-        subprocess.run(argv, env=env, cwd=str(cwd) if cwd else None, check=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise PipelineError(f"Step failed ({Path(argv[0]).name}); see output above") from exc
+        process = subprocess.Popen(argv, env=env, cwd=str(cwd) if cwd else None)
+        while True:
+            try:
+                returncode = process.wait(timeout=20)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = int(time.monotonic() - started)
+                minutes, seconds = divmod(elapsed, 60)
+                print(f'[{stage}] {exe} still running | elapsed={minutes:02d}:{seconds:02d} '
+                      '| total work unknown (waiting for native process)', flush=True)
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, argv)
+    except BaseException as exc:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        if isinstance(exc, (OSError, subprocess.CalledProcessError)):
+            raise PipelineError(f"Step failed ({exe}); see output above") from exc
+        raise
 
 def file_digest(path: Path) -> str:
     h = hashlib.sha256()
