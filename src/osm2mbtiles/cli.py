@@ -21,6 +21,8 @@ def arguments(argv=None):
     sub = p.add_subparsers(dest='action')
     doctor = sub.add_parser('doctor',help='check packaged native runtime')
     doctor.add_argument('--runtime',type=Path)
+    doctor.add_argument('--vector-only',action='store_true',
+                        help='check system PostGIS/osm2pgsql for vector conversion without Mapnik/Carto')
     verify = sub.add_parser('verify',help='check PNG MBTiles integrity and tile coordinates')
     verify.add_argument('file',type=Path)
     vverify = sub.add_parser('verify-vector',help='check gzip MVT PBF MBTiles and metadata')
@@ -89,10 +91,11 @@ def parse_zoom(text):
         raise ValueError('zoom range must be between 0 and 22')
     return lo,hi
 
-def get_runtime(arg):
+def get_runtime(arg, *, vector_only=False):
     home = os.environ.get('OSM2MBTILES_RUNTIME')
     default = Path(sys.executable).resolve().parent/'runtime' if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[2]/'runtime'
-    return Runtime(Path(arg or home or default).expanduser().resolve())
+    return Runtime(Path(arg or home or default).expanduser().resolve(),
+                   vector_only=vector_only)
 
 def _job_key(pbf_digest,style,bbox,lo,hi,buffer,meta,encoding):
     # Full hashing only occurs after preflight, not in dry-run.
@@ -134,7 +137,7 @@ def convert(args):
     outputs = [out] if args.format != 'both' else [out.with_name(out.stem + '.raster.mbtiles'), out.with_name(out.stem + '.vector.mbtiles')]
     if not args.force and any(p.exists() for p in outputs):
         raise PipelineError('Output already exists; use --force to replace: ' + ', '.join(map(str,outputs)))
-    runtime = get_runtime(args.runtime)
+    runtime = get_runtime(args.runtime, vector_only=args.format == 'vector')
     runtime.validate()
     if args.workdir:
         work = args.workdir.expanduser().resolve()
@@ -150,43 +153,47 @@ def run_pipeline(pbf,out,bbox,lo,hi,args,work,runtime):
     # Persisted work directory never receives bare contents from other projects.
     work.mkdir(parents=True,exist_ok=True)
     (work/'.osm2mbtiles-workspace').touch(exist_ok=True)
-    style = work / 'style'
-    source_style = runtime.style
-    style_inputs = ('project.xml','openstreetmap-carto-flex.lua','indexes.sql',
-                    'functions.sql','common-values.sql')
-    style_source_key = hashlib.sha256('|'.join(file_digest(source_style/f) for f in style_inputs).encode()).hexdigest()
-    style_key_path = work/'.source-style-key'
-    if style.is_dir() and (not style_key_path.is_file() or style_key_path.read_text() != style_source_key):
-        shutil.rmtree(style)
-    if not style.is_dir():
-        shutil.copytree(source_style, style)
-        style_key_path.write_text(style_source_key)
-    # Personal temp key changes if a source/style changes. In that case, preserve logs
-    # but discard previous private database before the new import.
+    raster = args.format in ('raster','both')
+    vector = args.format in ('vector','both')
     pbf_digest = file_digest(pbf)
-    key = _import_key(pbf_digest,style)
+    # A vector-only PBF has no Carto style. Keep its prior vector-state key
+    # completely independent of the raster import/style fingerprint.
+    style = work / 'style' if raster else None
     state_file = work/'import-state.json'
-    previous = json.loads(state_file.read_text()) if state_file.is_file() else {}
-    if (args.format != 'vector' or (previous.get('import_key') is not None and previous.get('import_key') != key)) and previous.get('import_key') != key and (work/'pgdata').exists():
-        # Never delete an unrelated directory merely because the user points --workdir there.
-        if not (work/'pgdata'/'PG_VERSION').exists() or not (work/'.osm2mbtiles-workspace').exists():
-            raise PipelineError('Unsafe workspace: refusing to remove unowned PostgreSQL cluster')
-        shutil.rmtree(work/'pgdata')
-        (work/'vector-state.json').unlink(missing_ok=True)
-    job_key = _job_key(pbf_digest,style,bbox,lo,hi,args.buffer,args.metatile,args.encoding)
+    previous = {}
+    key = None
+    job_key = None
+    if raster:
+        source_style = runtime.style
+        style_inputs = ('project.xml','openstreetmap-carto-flex.lua','indexes.sql',
+                        'functions.sql','common-values.sql')
+        style_source_key = hashlib.sha256('|'.join(file_digest(source_style/f) for f in style_inputs).encode()).hexdigest()
+        style_key_path = work/'.source-style-key'
+        if style.is_dir() and (not style_key_path.is_file() or style_key_path.read_text() != style_source_key):
+            shutil.rmtree(style)
+        if not style.is_dir():
+            shutil.copytree(source_style, style)
+            style_key_path.write_text(style_source_key)
+        # A changed Carto style invalidates only the shared/raster import cache.
+        key = _import_key(pbf_digest,style)
+        previous = json.loads(state_file.read_text()) if state_file.is_file() else {}
+        if previous.get('import_key') != key and (work/'pgdata').exists():
+            if not (work/'pgdata'/'PG_VERSION').exists() or not (work/'.osm2mbtiles-workspace').exists():
+                raise PipelineError('Unsafe workspace: refusing to remove unowned PostgreSQL cluster')
+            shutil.rmtree(work/'pgdata')
+            (work/'vector-state.json').unlink(missing_ok=True)
+        job_key = _job_key(pbf_digest,style,bbox,lo,hi,args.buffer,args.metatile,args.encoding)
     out.parent.mkdir(parents=True,exist_ok=True)
     partial = out.with_name(out.name+'.partial')
     if args.force and partial.exists():
         partial.unlink()
-    raster = args.format in ('raster','both')
-    vector = args.format in ('vector','both')
     raster_out = out.with_name(out.stem+'.raster.mbtiles') if args.format == 'both' else out
     vector_out = out.with_name(out.stem+'.vector.mbtiles') if args.format == 'both' else out
     job = dict(bbox=bbox,minzoom=lo,maxzoom=hi,mapfile=str(style/'project.xml'),
                partial=str(raster_out.with_name(raster_out.name+'.partial')),
                name=raster_out.stem,job_key=job_key,buffer=args.buffer,
                metatile=args.metatile,processes=args.processes,encoding=args.encoding,
-               runtime=str(runtime.root),fonts=str(style/'fonts'))
+               runtime=str(runtime.root),fonts=str(style/'fonts')) if raster else None
     vector_dir = Path(__file__).resolve().parents[2]/'vector'
     if vector and not (vector_dir/'vector-flex.lua').is_file():
         raise PipelineError(f'Missing vector flex source: {vector_dir}')
@@ -273,9 +280,10 @@ def main(argv=None):
     started = time.perf_counter() if args.action == 'convert' else None
     try:
         if args.action == 'doctor':
-            runtime=get_runtime(args.runtime)
+            runtime=get_runtime(args.runtime,vector_only=args.vector_only)
             runtime.validate()
-            print(f'Runtime layout OK: {runtime.root}')
+            print('Vector-only system tools OK' if args.vector_only
+                  else f'Runtime layout OK: {runtime.root}')
         elif args.action == 'convert':
             convert(args)
         elif args.action == 'verify-vector':
