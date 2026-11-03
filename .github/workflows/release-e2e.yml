@@ -141,8 +141,12 @@ jobs:
                       report[name]={'tile_count':len(rows),'max_distinct_rgb':max(color_counts),'bytes':p.stat().st_size}
                   else:
                       layers=json.loads(meta['json'])['vector_layers']
-                      assert len(layers)==19, len(layers)
-                      assert 'road' in [l['id'] for l in layers]
+                      ids=[layer['id'] for layer in layers]
+                      # 19 names exist in the complete schema, but z12-13 excludes
+                      # building_part (z14+) and housenumber (z15+).
+                      assert len(layers)==17, ids
+                      assert 'road' in ids
+                      assert 'building_part' not in ids and 'housenumber' not in ids
                       uncompressed=[gzip.decompress(b) for _,_,_,b in rows]
                       assert any(uncompressed)
                       report[name]={'tile_count':len(rows),'logical_layers':len(layers),'bytes':p.stat().st_size}
