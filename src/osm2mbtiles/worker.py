@@ -85,16 +85,18 @@ def render(job):
         mapnik.register_datasources(str(plugins))
     path = Path(job['partial'])
     path.parent.mkdir(parents=True,exist_ok=True)
-    total_tiles, total_metas = expected_counts(job)
     with sqlite3.connect(path) as db:
         create_db(db,job)
+        # Preserve the previous Mapnik construction/exception contract. Some
+        # environments fail at Map() before a render job has tile metadata.
+        mp = mapnik.Map(TILE,TILE)
+        total_tiles, total_metas = expected_counts(job)
         completed = db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
         count = 0
         # No invented import percentages: this denominator is the real XYZ
         # area scheduled by tasks(), including already-committed resume tiles.
         with TileProgress('RASTER', total_tiles, completed=completed,
                           metatiles=total_metas) as progress:
-            mp = mapnik.Map(TILE,TILE)
             mapnik.load_map(mp,job['mapfile'],True)
             if '3857' not in mp.srs and '+proj=merc' not in mp.srs:
                 raise ValueError(f'Expected Web Mercator style; got {mp.srs}')
