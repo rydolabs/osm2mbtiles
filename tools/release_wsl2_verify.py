@@ -27,7 +27,7 @@ except ImportError as exc:
 def describe(path: Path, required_format: str):
     if not path.is_file():
         raise RuntimeError(f"Expected output not found: {path.name}")
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         meta = dict(db.execute("SELECT name,value FROM metadata"))
         assert meta.get("format") == required_format, (path.name, meta.get("format"))
