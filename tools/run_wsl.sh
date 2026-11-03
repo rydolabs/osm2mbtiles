@@ -2,6 +2,7 @@
 # Invoked by run_windows.ps1 inside Ubuntu/Debian WSL.
 # No Docker and no system PostgreSQL service configuration by the user.
 set -Eeuo pipefail
+WSL_STARTED_SECONDS=$SECONDS
 
 if [[ $# -lt 7 || $# -gt 13 ]]; then
   echo 'usage: run_wsl.sh <project-win> <pbf-win> <out-win> <zoom> <workers> <cleanup> <format> [vector-sql-mode] [vector-import-profile] [vector-tiler] [batch-side] [raster-format] [bbox]' >&2
@@ -63,6 +64,7 @@ print_failure_diagnostics() {
   echo "[DIAG] Actual input PBF: ${PBF:-<not-yet-selected>}" >&2
   echo "[DIAG] Tile bbox: ${BBOX:-<PBF header>}" >&2
   echo "[DIAG] WSL pipeline stopped (exit=$status)" >&2
+  echo "[TIME] WSL elapsed before failure: $((SECONDS - WSL_STARTED_SECONDS))s" >&2
   if [[ -f "$WORKDIR/postgres.log" ]]; then
     echo "[DIAG] PostgreSQL logfile: $WORKDIR/postgres.log" >&2
     tail -n 70 "$WORKDIR/postgres.log" >&2 || true
@@ -85,6 +87,7 @@ print_failure_diagnostics() {
 trap 'print_failure_diagnostics $? "$LINENO" "$BASH_COMMAND"' ERR
 # Preflight is informational: the user's disk image location and input region
 # may vary, so do not invent a universal minimum free-space threshold.
+echo '[STAGE] 1/5 — Checking WSL resources and local cache'
 echo '[CHECK] WSL memory and available disk for PostgreSQL import:'
 free -h || true
 df -h "$BASE" || true
@@ -99,6 +102,7 @@ if [[ "$AUTO_DOWNLOAD" == 1 ]]; then
 fi
 export DEBIAN_FRONTEND=noninteractive
 
+echo '[STAGE] 2/5 — Checking native dependencies and preparing styles'
 # Avoid system PostgreSQL configuration; installed binaries only are used.
 need_packages=0
 for tool in git curl osm2pgsql ogr2ogr npm fc-cache; do
@@ -215,6 +219,7 @@ if [[ -n "$BBOX" ]]; then
 fi
 /usr/bin/python3 -m osm2mbtiles "$PBF" -z "$ZOOM" -o "$LOCAL_OUT" "${BBOX_ARGS[@]}" --dry-run
 /usr/bin/python3 -m osm2mbtiles doctor --runtime "$RUNTIME"
+echo '[STAGE] 3/5 — Importing PBF and exporting tiles (progress shown per phase)'
 echo "[RUN] Converting PBF to $FORMAT MBTiles."
 RASTER_ARGS=()
 if [[ "$FORMAT" != vector ]]; then
@@ -235,6 +240,7 @@ case "$FORMAT" in
   both) FILES=("$BASE_LOCAL.raster.mbtiles:$BASE_OUT.raster.mbtiles:raster"
               "$BASE_LOCAL.vector.mbtiles:$BASE_OUT.vector.mbtiles:vector") ;;
 esac
+echo '[STAGE] 4/5 — Verifying MBTiles and copying safely to Windows'
 for item in "${FILES[@]}"; do
   IFS=: read -r SRC DEST FMT <<< "$item"
   if [[ "$FMT" == vector ]]; then
@@ -252,6 +258,7 @@ for item in "${FILES[@]}"; do
   mv -f -- "$DEST.tmp" "$DEST"
   echo "[SUCCESS] Byte-verified $FMT MBTiles: $DEST"
 done
+echo '[STAGE] 5/5 — Cleaning private WSL export/cache if requested'
 # Remove WSL exports only after ALL outputs safely copied to Windows.
 for item in "${FILES[@]}"; do
   IFS=: read -r SRC DEST FMT <<< "$item"
@@ -263,3 +270,4 @@ for item in "${FILES[@]}"; do
     echo '[WARN] Output complete but optional WSL cache cleanup failed' >&2
   fi
 done
+echo "[TIME] WSL pipeline total elapsed: $((SECONDS - WSL_STARTED_SECONDS))s"
