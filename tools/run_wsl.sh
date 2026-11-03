@@ -3,6 +3,14 @@
 # No Docker and no system PostgreSQL service configuration by the user.
 set -Eeuo pipefail
 
+# Stage numbers describe workflow phases, NOT a fabricated end-to-end percent.
+START_SECONDS=$SECONDS
+stage() {
+  local number="$1" label="$2" elapsed=$((SECONDS-START_SECONDS))
+  printf '[STAGE] %s/6 | %s | elapsed=%02d:%02d\n' \
+    "$number" "$label" "$((elapsed/60))" "$((elapsed%60))"
+}
+
 if [[ $# -lt 7 || $# -gt 13 ]]; then
   echo 'usage: run_wsl.sh <project-win> <pbf-win> <out-win> <zoom> <workers> <cleanup> <format> [vector-sql-mode] [vector-import-profile] [vector-tiler] [batch-side] [raster-format] [bbox]' >&2
   exit 2
@@ -85,6 +93,7 @@ print_failure_diagnostics() {
 trap 'print_failure_diagnostics $? "$LINENO" "$BASH_COMMAND"' ERR
 # Preflight is informational: the user's disk image location and input region
 # may vary, so do not invent a universal minimum free-space threshold.
+stage 1 'Inspect WSL resources and isolated cache'
 echo '[CHECK] WSL memory and available disk for PostgreSQL import:'
 free -h || true
 df -h "$BASE" || true
@@ -100,6 +109,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 # Avoid system PostgreSQL configuration; installed binaries only are used.
+stage 2 'Check and prepare PostGIS, osm2pgsql and Mapnik tools'
 need_packages=0
 for tool in git curl osm2pgsql ogr2ogr npm fc-cache; do
   if ! command -v "$tool" >/dev/null 2>&1; then need_packages=1; fi
@@ -150,6 +160,7 @@ if [[ "$AUTO_DOWNLOAD" == 1 ]]; then
   # the remote Last-Modified date; incomplete files retain a .part suffix.
   bash "$PROJECT/tools/download_geofabrik.sh" "$PBF"
 fi
+stage 3 'Prepare OSM Carto stylesheet and fonts'
 if ! command -v carto >/dev/null 2>&1; then
   echo '[SETUP] Installing CartoCSS compiler into WSL...'
   if [[ "$(id -u)" == 0 ]]; then npm install --global carto@1.2.0; else sudo npm install --global carto@1.2.0; fi
@@ -190,6 +201,7 @@ PY
   )
 fi
 
+stage 4 'Stage isolated application runtime'
 # stage_from_system.py symlinks installed tools and Python with Mapnik.
 if [[ ! -f "$RUNTIME/styles/osm-carto/project.xml" ]]; then
   echo '[SETUP] Staging isolated application runtime...'
@@ -205,6 +217,7 @@ mkdir -p "$RUNTIME/bin"
 ln -sfn -- "$OSM2PGSQL_BIN" "$RUNTIME/bin/osm2pgsql"
 "$RUNTIME/bin/osm2pgsql" --version
 
+stage 5 'Calculate tile plan, import OSM PBF and render MBTiles'
 # Preflight tile count before importing the PBF or downloading the large assets.
 EXPORT_NAME="$(basename "$OUTPUT")"
 LOCAL_OUT="$EXPORTDIR/$EXPORT_NAME"
@@ -226,6 +239,7 @@ fi
   --vector-tiler "$VECTOR_TILER" --vector-batch-side "$BATCH_SIDE" \
   --vector-query-mode "$QUERY_MODE" --vector-import-profile "$IMPORT_PROFILE" --force
 
+stage 6 'Verify MBTiles and byte-check Windows copies'
 # For both, CLI adds raster/vector suffixes. Never copy an unverified file.
 BASE_OUT="${OUTPUT%.mbtiles}"
 BASE_LOCAL="${LOCAL_OUT%.mbtiles}"
@@ -263,3 +277,5 @@ for item in "${FILES[@]}"; do
     echo '[WARN] Output complete but optional WSL cache cleanup failed' >&2
   fi
 done
+elapsed=$((SECONDS-START_SECONDS))
+printf '[TIME] WSL conversion and copy finished | elapsed=%02d:%02d\n' "$((elapsed/60))" "$((elapsed%60))"
