@@ -37,5 +37,5 @@ the **same terminal**, flushing output promptly. No additional UI app is needed.
 - All displays use `print(..., flush=True)` and retain the original export/verify logic; no changes to geometry generation, PostGIS queries, raster pixels, MBTiles data, or database schemas are intended.
 
 See [README](../README.md), [한국어 README](../README.ko.md), and
-[Windows+WSL2 release test](WINDOWS-WSL2-RELEASE-TEST.md) (on release
-candidate PR #32, not necessarily present on main).
+[Windows+WSL2 release test in Draft PR #32](https://github.com/rydolabs/osm2mbtiles/pull/32)
+(which is maintained separately from this progress-display PR).
