@@ -124,6 +124,19 @@ Vector MBTiles에는 아래 **19개 논리 레이어**가 생성될 수 있습�
 
 **[Vector 레이어·속성 전체 스키마](docs/VECTOR-TILE-SCHEMA.md)** — 레이어별 최소 줌, 지오메트리, 필터, `class` 우선순위, 전체 속성 목록, MapLibre 예제와 실제 MBTiles 데이터 확인 방법.
 
+## 실시간 진행 상황 표시
+
+Windows+WSL2 실행기와 CLI는 `[CHECK]`, `[SETUP]`, `[IMPORT]`, `[RASTER]`, `[VECTOR]`, `[STAGE]`, `[TIME]` 등의 단계를 표시합니다. Raster·기본 Vector·실험적 Vector Batch 변환에서는 **실제 완료된 XYZ 타일 수**를 기준으로 퍼센트, tiles/s 및 ETA를 계산합니다.
+
+```text
+[STAGE] 3/5 — Importing PBF and exporting tiles (progress shown per phase)
+[IMPORT] osm2pgsql still running | elapsed=00:20 | total work unknown
+[RASTER] START | total=100 tiles | metatiles=3 | already-complete=20 | 20.0%
+[RASTER]  60.0% | 60/100 tiles | 8.0 tiles/s | ETA 00:00:05
+```
+
+숫자는 **출력 형식 예시**이며 실제 성능 수치가 아닙니다. Raster는 동일 작업의 부분 MBTiles가 남아 있으면 이미 완료된 타일을 진행률에 포함합니다. 하나의 Mapnik 메타타일 렌더링이나 SQL 실행이 오래 걸리는 동안에도 `WORKING`/경과 시간 알림이 나옵니다. 반면 PBF 가져오기·외부 GIS 자산 다운로드는 전체 작업량을 정확히 계산하기 어려우므로 **임의의 퍼센트나 ETA를 표시하지 않고** 작업 중임과 경과 시간만 보여줍니다. 타일 생성 후 최종 MBTiles 무결성 검사는 별도로 진행됩니다.
+
 ## 설치 조건과 제약
 
 - **공통:** 소스 체크아웃, Linux/Windows WSL2, Python 3.10+, PostgreSQL/PostGIS, osm2pgsql이 필요합니다.

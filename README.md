@@ -130,6 +130,20 @@ Generated `class` and `osm_id` are strings. OSM tag values are sparse: **20 allo
 
 **[Full layer / attribute schema](docs/VECTOR-TILE-SCHEMA.md)** — minimum zoom, geometry, tag filtering, exact property keys, MapLibre style fragment and a Python example reading real MBTiles features.
 
+## Live conversion progress
+
+The source CLI and Windows WSL2 launcher print **live stage markers** such as `[CHECK]`, `[SETUP]`, `[IMPORT]`, `[RASTER]`, `[VECTOR]`, `[STAGE]` and `[TIME]`. During Raster, default Vector and experimental Vector Batch export, progress is based on **actual scheduled XYZ tiles**, not an estimate of the full PBF import.
+
+```text
+[STAGE] 3/5 — Importing PBF and exporting tiles (progress shown per phase)
+[IMPORT] osm2pgsql still running | elapsed=00:20 | total work unknown
+[RASTER] START | total=100 tiles | metatiles=3 | already-complete=20 | 20.0%
+[RASTER]  60.0% | 60/100 tiles | 8.0 tiles/s | ETA 00:00:05
+[VECTOR] 100.0% | 100/100 tiles | 45.0 tiles/s | ETA 00:00:00
+```
+
+These are **format examples**, not performance measurements. Mapnik Raster percentages include already written tiles when resuming a matching partial MBTiles. Rendering and long SQL calls also emit a `WORKING`/elapsed heartbeat if no tile has finished for a while. Import and external GIS download steps have **no reliable overall percentage or ETA**, so only elapsed time and live native tool output are shown. A `COMPLETE` result requires finishing the corresponding tile task; final MBTiles verification remains a separate step.
+
 ## Requirements & limitations
 
 - **Linux / Windows WSL2** and a source checkout (the top-level `vector/` flex assets are not packaged into a standalone wheel).

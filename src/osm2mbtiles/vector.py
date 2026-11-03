@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from .tiles import xyz_range, tile_count
+from .progress import TileProgress
 
 EXTENT = 4096
 BUFFER = 64
@@ -298,26 +299,22 @@ def export(pbf, out: Path, bbox, lo: int, hi: int, processes: int):
     with ctx.Pool(processes=processes, initializer=init_worker) as pool:
         with sqlite3.connect(partial) as conn:
             create_db(conn, metadata(out.stem,bbox,lo,hi))
-            pending = last_pct = 0
-            for z, x, y, pbf_data in pool.imap_unordered(render_one, xyz_tasks(bbox,lo,hi), chunksize=1):
-                seen += 1
-                if pbf_data:
-                    # MVT in MBTiles 1.3 must be gzip compressed.
-                    conn.execute('INSERT INTO tiles VALUES (?,?,?,?)',
-                                 (z,x,(1<<z)-1-y,sqlite3.Binary(gzip.compress(pbf_data,compresslevel=6,mtime=0))))
-                    written += 1
-                    pending += 1
-                if pending >= 128:
-                    conn.commit()
-                    pending = 0
-                pct = int(seen * 100 / total) if total else 100
-                if pct >= last_pct + 5 or seen == total:
-                    rate = seen / max(0.001, time.monotonic() - start)
-                    eta = (total-seen) / rate if rate else 0
-                    print(f'[VECTOR] {pct:3d}%  {seen:,}/{total:,} tiles | nonempty={written:,} | {rate:,.1f}/s | ETA={eta/60:.1f}m', flush=True)
-                    last_pct = pct
-            if seen != total:
-                raise RuntimeError(f'vector tile jobs incomplete: {seen}/{total}')
+            pending = 0
+            with TileProgress('VECTOR', total) as progress:
+                for z, x, y, pbf_data in pool.imap_unordered(render_one, xyz_tasks(bbox,lo,hi), chunksize=1):
+                    seen += 1
+                    if pbf_data:
+                        # MVT in MBTiles 1.3 must be gzip compressed.
+                        conn.execute('INSERT INTO tiles VALUES (?,?,?,?)',
+                                     (z,x,(1<<z)-1-y,sqlite3.Binary(gzip.compress(pbf_data,compresslevel=6,mtime=0))))
+                        written += 1
+                        pending += 1
+                    if pending >= 128:
+                        conn.commit()
+                        pending = 0
+                    progress.advance(1)
+                if seen != total:
+                    raise RuntimeError(f'vector tile jobs incomplete: {seen}/{total}')
             conn.commit()
             conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
             conn.execute('PRAGMA journal_mode=DELETE')
