@@ -9,7 +9,7 @@ OSM_CACHE_LEGACY="$HOME/.cache/osm2mbtiles-oneclick"
 if [[ -n "${OSM2MBTILES_TEST_RUN_ID:-}" ]]; then
   if [[ ! "$OSM2MBTILES_TEST_RUN_ID" =~ ^[a-zA-Z0-9_-]{1,50}$ ]]; then
     echo '[ERROR] Invalid release smoke test run ID' >&2
-    return 4 2>/dev/null || exit 4
+    exit 4  # fail closed even if a caller sources without set -e
   fi
   OSM_CACHE_BASE="$HOME/.cache/osm2mbtiles-release-tests/$OSM2MBTILES_TEST_RUN_ID"
 fi
