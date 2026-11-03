@@ -6,6 +6,7 @@ and remain readable through WSL, redirected logs and GitHub Actions.
 """
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import time
@@ -87,7 +88,9 @@ class TileProgress:
                 elapsed = max(0.001, now - self.started)
                 rate = processed / elapsed
                 outstanding = self.total - self.completed
-                eta = duration(outstanding / rate) if rate else "unknown"
+                # Never show a zero-second ETA before the final tile:
+                # round a nonzero estimate up, not down.
+                eta = duration(math.ceil(outstanding / rate)) if rate else "unknown"
                 self._write(f"{pct:5.1f}% | {self.completed:,}/{self.total:,} tiles "
                             f"| {rate:,.1f} tiles/s | ETA {eta} "
                             f"| elapsed {duration(elapsed)}")
