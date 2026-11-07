@@ -26,6 +26,8 @@ This is a **source-based prototype**, not a single executable. Linux or Windows 
 
 ## Quick start
 
+**Live progress:** the terminal shows WSL setup stages, 15-second heartbeats during quiet imports, and measured Raster/Vector tile completion, throughput and ETA. [How progress is calculated](docs/PROGRESS-OUTPUT.md). The import phase does not display an invented percentage. To test on a real Windows+WSL2 PC and save a diagnostic ZIP, double-click [`TEST-Progress-WSL2.bat`](TEST-Progress-WSL2.bat) ([instructions in Korean](docs/WINDOWS-WSL2-PROGRESS-TEST.ko.md)).
+
 ### Windows + WSL2
 
 From a source checkout, after setting up WSL2 Ubuntu/Debian and the native runtime:

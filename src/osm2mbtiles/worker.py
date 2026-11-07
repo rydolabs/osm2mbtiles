@@ -9,6 +9,7 @@ import math
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 TILE = 256
@@ -56,6 +57,58 @@ def create_db(db,job):
     db.executemany('INSERT OR REPLACE INTO metadata(name,value) VALUES(?,?)',meta.items())
     db.commit()
 
+def expected_counts(job):
+    """Exact XYZ tile counts for all requested zooms, without rendering."""
+    result = {}
+    for z in range(job['minzoom'], job['maxzoom'] + 1):
+        xmin, xmax, ymin, ymax = bounds(job['bbox'], z)
+        result[z] = (xmax - xmin + 1) * (ymax - ymin + 1)
+    return result
+
+
+def duration_text(seconds):
+    if seconds is None:
+        return '--:--'
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return (f'{hours:02d}:{minutes:02d}:{secs:02d}' if hours
+            else f'{minutes:02d}:{secs:02d}')
+
+
+class ProgressBar:
+    """Tile-based feedback. Reused rows count as done; rate uses only new tiles."""
+    def __init__(self, total, initial=0, *, clock=None, interval=5.0):
+        self.total = max(0, int(total))
+        self.initial = max(0, min(self.total, int(initial)))
+        self.clock = clock or time.monotonic
+        self.started = self.clock()
+        self.last_report = self.started
+        self.last_pct = -1
+        self.interval = interval
+
+    def update(self, completed, *, zoom=None, metatiles=0, force=False):
+        completed = min(self.total, max(0, int(completed)))
+        now = self.clock()
+        pct = (100.0 * completed / self.total) if self.total else 100.0
+        rounded = int(pct)
+        if not (force or rounded > self.last_pct
+                or now - self.last_report >= self.interval
+                or completed == self.total):
+            return False
+        elapsed = max(0.001, now - self.started)
+        processed = max(0, completed - self.initial)
+        rate = processed / elapsed
+        remaining = (self.total - completed) / rate if rate > 0 else None
+        zoom_label = f' z{zoom}' if zoom is not None else ''
+        print(f'[RASTER] {pct:5.1f}% | {completed:,}/{self.total:,} tiles '
+              f'| {rate:,.1f} tile/s | ETA {duration_text(remaining)} '
+              f'| metatiles={metatiles}{zoom_label}', flush=True)
+        self.last_pct = rounded
+        self.last_report = now
+        return True
+
+
 def render(job):
     import mapnik
     runtime = Path(job['runtime'])
@@ -79,6 +132,14 @@ def render(job):
         if mp.buffer_size == 0:
             mp.buffer_size = int(job['buffer'])
         completed = db.execute('SELECT COUNT(*) FROM tiles').fetchone()[0]
+        per_zoom = expected_counts(job)
+        total = sum(per_zoom.values())
+        if completed > total:
+            raise ValueError('Partial MBTiles contains more tiles than requested')
+        progress = ProgressBar(total, initial=completed)
+        print(f'[RASTER] Mapnik render start | {total:,} planned tiles, '
+              f'{completed:,} already cached | zoom={job["minzoom"]}-{job["maxzoom"]}',flush=True)
+        progress.update(completed, force=True)
         count = 0
         for z,mx,my,mw,mh,xmin,xmax,ymin,ymax in tasks(job):
             coords = [(x,y,(1<<z)-1-y) for y in range(ymin,ymax+1)
@@ -103,6 +164,7 @@ def render(job):
             if count % 16 == 0:
                 db.commit()
                 print(f'METATILES={count} TILES={completed}',flush=True)
+            progress.update(completed, zoom=z, metatiles=count)
         db.commit()
         # Complete database is checkpointed and switched back to single-file journal mode.
         db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
@@ -110,6 +172,10 @@ def render(job):
         result = db.execute('PRAGMA integrity_check').fetchone()[0]
         if result != 'ok':
             raise RuntimeError('MBTiles integrity_check failed: '+result)
+        if progress.last_pct < 100:
+            progress.update(completed, metatiles=count, force=True)
+        print(f'[RASTER] COMPLETE: {completed:,}/{total:,} tiles '
+              f'| new metatiles={count:,} | elapsed={duration_text(time.monotonic()-progress.started)}',flush=True)
         print(f'COMPLETE TILES={completed}',flush=True)
 
 if __name__ == '__main__':

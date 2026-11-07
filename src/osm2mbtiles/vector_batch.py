@@ -158,6 +158,10 @@ def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
     rows_to_insert = []
     insert_sql = "INSERT INTO tiles VALUES (?,?,?,?)"
     start = time.monotonic()
+    last_report = start
+    last_pct = -1
+    print(f"[VECTOR-BATCH] start | {total:,} planned XYZ tiles "
+          f"| zoom={lo}-{hi} | workers={processes} | batch-side={side}", flush=True)
     ctx = multiprocessing.get_context("spawn" if sys.platform == "win32" else "fork")
     with ctx.Pool(processes=processes, initializer=_init_worker) as pool:
         with sqlite3.connect(partial) as conn:
@@ -187,6 +191,21 @@ def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
                     commit_seconds += time.monotonic() - stamp
                     commits += 1
                     pending = 0
+                now = time.monotonic()
+                pct = (100.0 * seen / total) if total else 100.0
+                if int(pct) > last_pct or now - last_report >= 5 or seen == total:
+                    elapsed = max(0.001, now - start)
+                    rate = seen / elapsed
+                    remaining = (total - seen) / rate if rate else None
+                    seconds = max(0, int(remaining)) if remaining is not None else 0
+                    eta = (f"{seconds//3600:02d}:{(seconds%3600)//60:02d}:{seconds%60:02d}"
+                           if seconds >= 3600 else
+                           f"{seconds//60:02d}:{seconds%60:02d}") if remaining is not None else "--:--"
+                    print(f"[VECTOR-BATCH] {pct:5.1f}% | {seen:,}/{total:,} tiles "
+                          f"| nonempty={written:,} | {rate:,.1f} tile/s "
+                          f"| ETA {eta}", flush=True)
+                    last_pct = int(pct)
+                    last_report = now
                 last = time.monotonic()
             if seen != total:
                 raise RuntimeError(f"batch export incomplete: {seen}/{total}")
@@ -209,6 +228,8 @@ def export_batch(pbf, out: Path, bbox, lo: int, hi: int,
           f"insert_seconds={insert_seconds:.3f}, commit_seconds={commit_seconds:.3f}, "
           f"worker_wait_seconds={worker_wait_seconds:.3f}", flush=True)
     os.replace(partial, out)
+    print(f"[VECTOR-BATCH] COMPLETE | {seen:,}/{total:,} tiles | nonempty={written:,} "
+          f"| elapsed={time.monotonic()-start:.2f}s", flush=True)
     print(f"[BATCH] {written}/{total} nonempty tiles, "
           f"{time.monotonic()-start:.2f}s, {out.stat().st_size} bytes", flush=True)
     return written

@@ -10,6 +10,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,12 +109,45 @@ class Runtime:
                 env[key]=str(folder)
         return env
 
+def _step_label(argv):
+    """Avoid printing arguments: they may contain passwords or local paths."""
+    tool = Path(argv[0]).name
+    if tool.startswith('osm2pgsql'):
+        return '[IMPORT]', 'osm2pgsql'
+    if len(argv) > 1:
+        script = Path(argv[1]).name
+        if script == 'worker.py':
+            return '[RASTER]', 'Mapnik renderer'
+        if script == 'vector_worker.py':
+            return '[VECTOR]', 'MVT renderer'
+    if tool.startswith('psql'):
+        return '[POSTGIS]', 'SQL preparation'
+    return '[RUN]', tool
+
+
 def run(cmd: list[str | Path], env: dict | None = None, cwd: Path | None = None) -> None:
     argv = [str(v) for v in cmd]
+    label, name = _step_label(argv)
+    started = time.monotonic()
+    stop = threading.Event()
+
+    def heartbeat():
+        # Child stdout/stderr inherit the live console. During quiet native
+        # imports this ticker shows liveness, never invents a percentage/ETA.
+        while not stop.wait(15.0):
+            elapsed = int(time.monotonic() - started)
+            print(f'{label} {name} still running | elapsed={elapsed//60:02d}:{elapsed%60:02d} '
+                  '(no measured per-object progress)', flush=True)
+
+    ticker = threading.Thread(target=heartbeat, daemon=True)
+    ticker.start()
     try:
         subprocess.run(argv, env=env, cwd=str(cwd) if cwd else None, check=True)
     except (OSError, subprocess.CalledProcessError) as exc:
         raise PipelineError(f"Step failed ({Path(argv[0]).name}); see output above") from exc
+    finally:
+        stop.set()
+        ticker.join(timeout=1.0)
 
 def file_digest(path: Path) -> str:
     h = hashlib.sha256()

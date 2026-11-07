@@ -127,7 +127,21 @@ $script = Join-Path $PSScriptRoot 'run_wsl.sh'
 $scriptUnix = (& wsl.exe --exec wslpath -a $script 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $scriptUnix) { Fail 'Unable to translate launcher path into WSL.' }
 Write-Host "`n[INFO] Starting native Mapnik/PostGIS pipeline..." -ForegroundColor Cyan
-& wsl.exe --exec bash $scriptUnix $project $pbf $output $zoom $workers $cachePolicy $format $queryMode $importProfile $vectorTiler $batchSide $rasterFormat $bbox
+# In real QA mode, explicitly set the test cache ID in the Linux process.
+# Do not depend on WSLENV forwarding, which is user-configuration-dependent.
+$wslArguments = @('--exec')
+if ($env:OSM2MBTILES_TEST_RUN_ID) {
+    $testRunId = $env:OSM2MBTILES_TEST_RUN_ID
+    if ($testRunId -notmatch '^[A-Za-z0-9_-]{1,50}$') {
+        Fail 'Invalid OSM2MBTILES_TEST_RUN_ID; refusing to use shared cache.' 4
+    }
+    $wslArguments += @('/usr/bin/env', "OSM2MBTILES_TEST_RUN_ID=$testRunId")
+    Write-Host '[CHECK] Isolated WSL test cache selected.' -ForegroundColor DarkCyan
+}
+$wslArguments += @('bash', $scriptUnix, $project, $pbf, $output, $zoom,
+                   $workers, $cachePolicy, $format, $queryMode, $importProfile,
+                   $vectorTiler, $batchSide, $rasterFormat, $bbox)
+& wsl.exe @wslArguments
 $code = $LASTEXITCODE
 if ($code -ne 0) { Fail "WSL rendering failed (exit $code). See output above." $code }
 foreach ($produced in $outputs) {
