@@ -164,21 +164,39 @@ try {
         # Regression for the actual WSL failure on a user's PC:
         # invoke the very same native-process logger used by the real preflight.
         # This is a Windows child-process mock, NOT a real WSL success.
-        $childCommand = '[Console]::Out.WriteLine("DISTRO=ubuntu"); [Console]::Out.WriteLine("KERNEL=6.6.87.2-microsoft-standard-WSL2"); [Console]::Out.WriteLine("APT_READY"); [Console]::Error.WriteLine("diagnostic stderr line"); exit 0'
+        # Write real child scripts to local-data and invoke -File. Passing a
+        # quoted script through Windows PowerShell 5.1 -Command strips quote
+        # characters and introduces a test-only parser failure.
+        $mockProgram = Join-Path $data 'mock-native-success.ps1'
+        Write-Utf8 $mockProgram @'
+[Console]::Out.WriteLine('DISTRO=ubuntu')
+[Console]::Out.WriteLine('KERNEL=6.6.87.2-microsoft-standard-WSL2')
+[Console]::Out.WriteLine('APT_READY')
+[Console]::Error.WriteLine('diagnostic stderr line')
+exit 0
+'@
         $mockLog = Join-Path $raw 'mock-wsl-child-success.log'
-        $mockExit = Invoke-Logged 'powershell.exe' @('-NoLogo', '-NoProfile', '-Command', $childCommand) $mockLog
-        if ($mockExit -isnot [int] -or $mockExit -ne 0) {
-            throw ('Native child logger must emit exactly one integer exit code; got ' +
+        $mockExit = Invoke-Logged 'powershell.exe' @('-NoLogo', '-NoProfile', '-File', $mockProgram) $mockLog
+        if ($mockExit -isnot [int]) {
+            throw ('Native child logger returned multiple objects, not an integer: ' +
                    $mockExit.GetType().FullName)
+        }
+        if ($mockExit -ne 0) {
+            throw ('Native preflight mock returned ' + $mockExit + '; review mock-wsl-child-success.log')
         }
         $mockText = Get-Content -LiteralPath $mockLog -Raw
         Assert-WslPreflight $mockText $mockExit
         if ($mockText -notmatch 'diagnostic stderr line') {
             throw 'Native child stderr was not recorded in the log.'
         }
-        $badChildCommand = '[Console]::Out.WriteLine("mocked WSL failed"); [Console]::Error.WriteLine("mocked stderr"); exit 7'
+        $badProgram = Join-Path $data 'mock-native-failure.ps1'
+        Write-Utf8 $badProgram @'
+[Console]::Out.WriteLine('mocked WSL failed')
+[Console]::Error.WriteLine('mocked stderr')
+exit 7
+'@
         $badLog = Join-Path $raw 'mock-wsl-child-failure.log'
-        $badExit = Invoke-Logged 'powershell.exe' @('-NoLogo', '-NoProfile', '-Command', $badChildCommand) $badLog
+        $badExit = Invoke-Logged 'powershell.exe' @('-NoLogo', '-NoProfile', '-File', $badProgram) $badLog
         if ($badExit -isnot [int] -or $badExit -ne 7) {
             throw 'Native child nonzero exit code was lost or mixed with process output.'
         }
@@ -188,8 +206,10 @@ try {
         if (-not $nativeFailureRejected) {
             throw 'Native child preflight falsely accepted a failed process.'
         }
+        $quietProgram = Join-Path $data 'mock-native-quiet.ps1'
+        Write-Utf8 $quietProgram "exit 0"
         $quietLog = Join-Path $raw 'mock-wsl-child-quiet.log'
-        $quietExit = Invoke-Logged 'powershell.exe' @('-NoLogo', '-NoProfile', '-Command', 'exit 0') $quietLog
+        $quietExit = Invoke-Logged 'powershell.exe' @('-NoLogo', '-NoProfile', '-File', $quietProgram) $quietLog
         if ($quietExit -isnot [int] -or $quietExit -ne 0) {
             throw 'Quiet native process did not return exactly one integer zero.'
         }
