@@ -127,7 +127,33 @@ $script = Join-Path $PSScriptRoot 'run_wsl.sh'
 $scriptUnix = (& wsl.exe --exec wslpath -a $script 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $scriptUnix) { Fail 'Unable to translate launcher path into WSL.' }
 Write-Host "`n[INFO] Starting native Mapnik/PostGIS pipeline..." -ForegroundColor Cyan
-& wsl.exe --exec bash $scriptUnix $project $pbf $output $zoom $workers $cachePolicy $format $queryMode $importProfile $vectorTiler $batchSide $rasterFormat $bbox
+# The test harness needs a private Linux cache, even on Windows machines where
+# WSLENV forwarding is disabled/misconfigured. Pass the validated test run ID
+# explicitly to the WSL child. Normal user runs retain the original arguments.
+$wslArguments = @('--exec')
+if ($env:OSM2MBTILES_TEST_RUN_ID) {
+    $testRunId = $env:OSM2MBTILES_TEST_RUN_ID
+    if ($testRunId -notmatch '^[A-Za-z0-9_-]{1,50}
+if ($code -ne 0) { Fail "WSL rendering failed (exit $code). See output above." $code }
+foreach ($produced in $outputs) {
+    if (-not (Test-Path -LiteralPath $produced -PathType Leaf)) {
+        Fail "Runner finished but output was not created: $produced"
+    }
+    Write-Host "`n[SUCCESS] $format MBTiles: $produced" -ForegroundColor Green
+}
+$endToEndTimer.Stop()
+Write-Host ("[TIME] Windows end-to-end elapsed (WSL + verify + copy): {0:N3}s ({1})" -f $endToEndTimer.Elapsed.TotalSeconds,$endToEndTimer.Elapsed.ToString('hh\:mm\:ss')) -ForegroundColor Cyan
+exit 0
+) {
+        Fail 'Invalid OSM2MBTILES_TEST_RUN_ID; refusing to access shared cache.' 4
+    }
+    $wslArguments += @('/usr/bin/env', "OSM2MBTILES_TEST_RUN_ID=$testRunId")
+    Write-Host '[CHECK] Isolated release-test WSL cache selected.' -ForegroundColor DarkCyan
+}
+$wslArguments += @('bash', $scriptUnix, $project, $pbf, $output, $zoom,
+                   $workers, $cachePolicy, $format, $queryMode, $importProfile,
+                   $vectorTiler, $batchSide, $rasterFormat, $bbox)
+& wsl.exe @wslArguments
 $code = $LASTEXITCODE
 if ($code -ne 0) { Fail "WSL rendering failed (exit $code). See output above." $code }
 foreach ($produced in $outputs) {
