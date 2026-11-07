@@ -60,6 +60,21 @@ jobs:
           if ($log -match 'Alice|abc123|password=example') {
             throw 'ZIP leaked the fixture username or token'
           }
+          # Exercise actual Invoke-Logged subprocess semantics, not only
+          # string-only Assert-WslPreflight fixtures. These logs come from
+          # real Windows child processes in the archive selftest.
+          $nativeGood=Read-ZipEntry $zips[0].FullName 'logs/mock-wsl-child-success.log'
+          foreach($expected in @('DISTRO=ubuntu','KERNEL=6.6.87.2-microsoft-standard-WSL2',
+                                  'APT_READY','diagnostic stderr line')) {
+            if(-not $nativeGood.Contains($expected)) {
+              throw "Mocked native preflight missing stdout/stderr: $expected"
+            }
+          }
+          $nativeBad=Read-ZipEntry $zips[0].FullName 'logs/mock-wsl-child-failure.log'
+          if(-not $nativeBad.Contains('mocked WSL failed') -or
+             -not $nativeBad.Contains('mocked stderr')) {
+            throw 'Failed native subprocess outputs were not retained'
+          }
           & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File 'tools/progress_wsl2_test.ps1' -ArchiveSelfTestFail -ReportRoot $dir
           if ($LASTEXITCODE -ne 1) { throw 'Intentional failure was not propagated' }
           $zips=@(Get-ChildItem -LiteralPath $dir -Filter '*.zip')
