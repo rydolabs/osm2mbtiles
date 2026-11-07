@@ -134,7 +134,12 @@ def test_progress_harness_has_actual_windows_to_wsl_entrypoint():
     assert "Invoke-Logged 'powershell.exe'" in ps
     assert "tools/run_windows.ps1" in ps
     assert "'12-16'" in ps
-    assert "OSM2MBTILES_TEST_RUN_ID" in ps and "WSLENV" in ps
+    wrapper=(ROOT/"tools/run_windows.ps1").read_text(encoding="utf-8")
+    assert "OSM2MBTILES_TEST_RUN_ID" in ps
+    assert "Assert-WslPreflight" in ps
+    assert "logs/wsl-distros.log" in ps
+    assert "WSLENV forwarding is not required" in ps
+    assert "/usr/bin/env" in wrapper and 'OSM2MBTILES_TEST_RUN_ID=$testRunId' in wrapper
     assert "Compress-Archive" in ps and "Safe-Logs" in ps
     assert "ArchiveSelfTestFail" in ps
     assert (ROOT/"tools/progress_wsl2_verify.py").is_file()
