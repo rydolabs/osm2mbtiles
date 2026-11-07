@@ -153,21 +153,38 @@ try {
         if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
             throw 'WSL not installed. Install an Ubuntu WSL2 distribution first.'
         }
+        # Record installed distributions for diagnosis, without treating the
+        # localized, UTF-16 wsl.exe list output as a WSL2 success guarantee.
+        # The previous QA code required WSLENV variable forwarding; it could
+        # fail even on a working WSL2 machine. Private cache ID is now passed
+        # explicitly by run_windows.ps1 to /usr/bin/env inside WSL.
         $env:OSM2MBTILES_TEST_RUN_ID = $runId
-        $wslEntries = @()
-        if ($env:WSLENV) { $wslEntries = @($env:WSLENV -split ':') }
-        if ($wslEntries -notcontains 'OSM2MBTILES_TEST_RUN_ID') {
-            $wslEntries += 'OSM2MBTILES_TEST_RUN_ID'
+        $oldPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & wsl.exe --list --verbose 2>&1 |
+                Out-File -FilePath (Join-Path $raw 'wsl-distros.log') -Encoding Unicode
+        } finally {
+            $ErrorActionPreference = $oldPreference
         }
-        $env:WSLENV = $wslEntries -join ':'
-        $probe = 'set -e; . /etc/os-release; echo DISTRO=$ID; uname -r; command -v apt-get; echo QA_ID=$OSM2MBTILES_TEST_RUN_ID'
-        $probeExit = Invoke-Logged 'wsl.exe' @('--exec', 'bash', '-lc', $probe) (Join-Path $raw 'wsl2-preflight.log')
+        $probe = 'set -e; . /etc/os-release; echo DISTRO=$ID; echo KERNEL=$(uname -r); command -v apt-get >/dev/null; echo APT_READY'
+        $probeExit = Invoke-Logged 'wsl.exe' @('--exec', 'bash', '-c', $probe) (Join-Path $raw 'wsl2-preflight.log')
         $probeText = Get-Content -LiteralPath (Join-Path $raw 'wsl2-preflight.log') -Raw
-        if ($probeExit -ne 0 -or $probeText -notmatch 'microsoft.*WSL2' -or
-            $probeText -notmatch 'DISTRO=(ubuntu|debian)' -or
-            $probeText -notmatch [regex]::Escape('QA_ID=' + $runId)) {
-            throw 'A working default Ubuntu/Debian WSL2 distribution with WSLENV forwarding is required. Check: wsl --list --verbose'
+        if ($probeExit -ne 0) {
+            throw ('Default WSL distribution could not execute bash and apt-get. Exit code: ' +
+                   $probeExit + '. Review logs/wsl2-preflight.log and logs/wsl-distros.log in the ZIP.')
         }
+        if ($probeText -notmatch '(?mi)^DISTRO=(ubuntu|debian)\s*$') {
+            throw 'Default Linux distribution is not Ubuntu/Debian. Run wsl --list --verbose and set Ubuntu/Debian as default.'
+        }
+        if ($probeText -notmatch '(?mi)^KERNEL=.*microsoft.*wsl2\s*$') {
+            throw 'Default distribution does not report a WSL2 kernel. Run wsl --list --verbose and convert that distro to VERSION 2.'
+        }
+        if ($probeText -notmatch '(?mi)^APT_READY\s*$') {
+            throw 'The default WSL distribution does not have apt-get; Ubuntu/Debian is required.'
+        }
+        Write-Host '[CHECK] Default Ubuntu/Debian Linux kernel confirms WSL2.'
+        Write-Host '[CHECK] Private test cache ID will be passed explicitly; WSLENV forwarding is not required.'
         $state['wsl_probe'] = Redact $probeText.Trim()
         Stage 'wsl2' 'PASS'
 
@@ -178,8 +195,18 @@ try {
         $uidText = (Get-Content -LiteralPath (Join-Path $raw 'wsl-uid.log') -Raw).Trim()
         if ($uidText -ne '0') {
             Write-Host '[INFO] Ubuntu sudo may prompt for the Ubuntu password (not the Windows password).'
-            $sudoExit = Invoke-Logged 'wsl.exe' @('--exec', 'sudo', '-v') (Join-Path $raw 'wsl-sudo.log')
-            if ($sudoExit -ne 0) { throw 'Ubuntu sudo permission check failed.' }
+            # Native sudo must inherit the real console: piping through
+            # Tee-Object makes password prompts fail on some WSL terminals.
+            $prior = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & wsl.exe --exec sudo -v
+                $sudoExit = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $prior
+            }
+            Write-Utf8 (Join-Path $raw 'wsl-sudo.log') ('sudo preflight exit=' + $sudoExit)
+            if ($sudoExit -ne 0) { throw 'Ubuntu sudo permission check failed; confirm your Linux user can run sudo.' }
         }
 
         $pbf = Join-Path $data 'monaco-progress.osm.pbf'
